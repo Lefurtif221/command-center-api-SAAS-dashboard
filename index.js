@@ -11,6 +11,7 @@ const allowedOrigins = (process.env.FRONTEND_URL || 'http://localhost:5173')
 
 app.use((req, res, next) => {
   const origin = (req.headers.origin || '').replace(/\/+$/, '');
+  console.log(`${req.method} ${req.url} origin=${origin}`);
   if (!origin || allowedOrigins.includes(origin)) {
     res.setHeader('Access-Control-Allow-Origin', origin || '*');
   }
@@ -18,7 +19,8 @@ app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   if (req.method === 'OPTIONS') {
-    return res.sendStatus(204);
+    res.status(204).end();
+    return;
   }
   next();
 });
