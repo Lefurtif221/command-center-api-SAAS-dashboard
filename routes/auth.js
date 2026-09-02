@@ -10,7 +10,12 @@ const router = express.Router();
 async function verifyGoogleToken(idToken) {
   const response = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${idToken}`);
   if (!response.ok) throw new Error('Token Google invalide');
-  return await response.json();
+  const payload = await response.json();
+  const expectedClientId = process.env.GOOGLE_CLIENT_ID;
+  if (expectedClientId && payload.aud !== expectedClientId) {
+    throw new Error('Client ID Google invalide');
+  }
+  return payload;
 }
 
 // Signup
