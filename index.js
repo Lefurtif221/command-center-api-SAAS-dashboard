@@ -1,6 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const authRoutes = require('./routes/auth');
+const servicesRoutes = require('./routes/services');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -28,6 +29,7 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: '10mb' }));
 
 app.use('/api/auth', authRoutes);
+app.use('/api/services', servicesRoutes);
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
