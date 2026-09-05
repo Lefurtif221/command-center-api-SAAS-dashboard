@@ -171,13 +171,15 @@ router.put('/profile', auth, async (req, res) => {
 router.get('/google', (req, res) => {
   const clientId = process.env.GOOGLE_CLIENT_ID;
   if (!clientId) return res.status(500).json({ error: 'Google OAuth non configuré' });
-  const url = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&redirect_uri=${encodeURIComponent(FRONTEND_URL + '/auth/callback/google')}&response_type=code&scope=${encodeURIComponent('email profile')}&access_type=offline&prompt=consent`;
+  const callbackUrl = (process.env.API_URL || req.protocol + '://' + req.get('host')) + '/api/auth/google/callback';
+  const url = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&redirect_uri=${encodeURIComponent(callbackUrl)}&response_type=code&scope=${encodeURIComponent('email profile')}&access_type=offline&prompt=consent`;
   res.redirect(url);
 });
 
 // Google OAuth - callback
 router.get('/google/callback', async (req, res) => {
   const { code, error } = req.query;
+  const callbackUrl = (process.env.API_URL || req.protocol + '://' + req.get('host')) + '/api/auth/google/callback';
   if (error || !code) {
     return res.redirect(FRONTEND_URL + '/auth?error=' + encodeURIComponent(error || 'Code manquant'));
   }
@@ -194,7 +196,7 @@ router.get('/google/callback', async (req, res) => {
         code,
         client_id: clientId,
         client_secret: clientSecret,
-        redirect_uri: FRONTEND_URL + '/auth/callback/google',
+        redirect_uri: callbackUrl,
         grant_type: 'authorization_code',
       }),
     });
