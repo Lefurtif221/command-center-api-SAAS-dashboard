@@ -6,6 +6,8 @@ const { auth, JWT_SECRET } = require('../middleware/auth');
 
 const router = express.Router();
 
+const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
+
 // Verify Google ID token
 async function verifyGoogleToken(idToken) {
   const response = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${idToken}`);
@@ -162,6 +164,79 @@ router.put('/profile', auth, async (req, res) => {
   } catch (err) {
     console.error('Profile error:', err);
     res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// Google OAuth - redirect to Google
+router.get('/google', (req, res) => {
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  if (!clientId) return res.status(500).json({ error: 'Google OAuth non configuré' });
+  const url = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&redirect_uri=${encodeURIComponent(FRONTEND_URL + '/auth/callback/google')}&response_type=code&scope=${encodeURIComponent('email profile')}&access_type=offline&prompt=consent`;
+  res.redirect(url);
+});
+
+// Google OAuth - callback
+router.get('/google/callback', async (req, res) => {
+  const { code, error } = req.query;
+  if (error || !code) {
+    return res.redirect(FRONTEND_URL + '/auth?error=' + encodeURIComponent(error || 'Code manquant'));
+  }
+
+  try {
+    const clientId = process.env.GOOGLE_CLIENT_ID;
+    const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+    if (!clientId || !clientSecret) throw new Error('Google OAuth non configuré');
+
+    const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        code,
+        client_id: clientId,
+        client_secret: clientSecret,
+        redirect_uri: FRONTEND_URL + '/auth/callback/google',
+        grant_type: 'authorization_code',
+      }),
+    });
+    const tokenData = await tokenRes.json();
+    if (tokenData.error) throw new Error(tokenData.error_description || tokenData.error);
+
+    const userinfoRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+      headers: { Authorization: `Bearer ${tokenData.access_token}` },
+    });
+    const googleUser = await userinfoRes.json();
+    const { email, name, picture, id: googleId } = googleUser;
+
+    let result = await sql`
+      SELECT id, name, email, initials, plan, avatar_url FROM users
+      WHERE oauth_provider = 'google' AND oauth_id = ${googleId}
+    `;
+
+    if (result.length === 0) {
+      const existing = await sql`SELECT id FROM users WHERE email = ${email}`;
+      if (existing.length > 0) {
+        result = await sql`
+          UPDATE users SET oauth_provider = 'google', oauth_id = ${googleId}, avatar_url = ${picture}, updated_at = NOW()
+          WHERE email = ${email}
+          RETURNING id, name, email, initials, plan, avatar_url
+        `;
+      } else {
+        const initials = name ? name.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2) : email[0].toUpperCase();
+        result = await sql`
+          INSERT INTO users (name, email, oauth_provider, oauth_id, initials, avatar_url)
+          VALUES (${name || email.split('@')[0]}, ${email}, 'google', ${googleId}, ${initials}, ${picture})
+          RETURNING id, name, email, initials, plan, avatar_url
+        `;
+      }
+    }
+
+    const user = result[0];
+    const appToken = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: '7d' });
+
+    res.redirect(FRONTEND_URL + '/auth?token=' + appToken + '&user=' + encodeURIComponent(JSON.stringify(user)));
+  } catch (err) {
+    console.error('Google callback error:', err);
+    res.redirect(FRONTEND_URL + '/auth?error=' + encodeURIComponent(err.message));
   }
 });
 
