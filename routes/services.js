@@ -192,13 +192,42 @@ router.delete('/:service', auth, async (req, res) => {
   }
 });
 
+// Auto-refresh Gmail token if expired
+async function refreshGmailToken(userId, refreshToken) {
+  const response = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: process.env.GOOGLE_CLIENT_ID,
+      client_secret: process.env.GOOGLE_CLIENT_SECRET,
+      refresh_token: refreshToken,
+      grant_type: 'refresh_token',
+    }),
+  });
+  const data = await response.json();
+  if (data.error) throw new Error(data.error_description || data.error);
+
+  const newToken = data.access_token;
+  const expiresAt = new Date(Date.now() + data.expires_in * 1000);
+  await sql`
+    UPDATE connected_services SET access_token = ${newToken}, token_expires_at = ${expiresAt}
+    WHERE user_id = ${userId} AND service_name = 'gmail'
+  `;
+  return newToken;
+}
+
 // Fetch emails from Gmail
 router.get('/gmail/emails', auth, async (req, res) => {
   try {
-    const result = await sql`SELECT access_token, token_expires_at FROM connected_services WHERE user_id = ${req.userId} AND service_name = 'gmail'`;
+    const result = await sql`SELECT access_token, refresh_token, token_expires_at FROM connected_services WHERE user_id = ${req.userId} AND service_name = 'gmail'`;
     if (result.length === 0) return res.status(400).json({ error: 'Gmail non connecté' });
 
-    const { access_token: token } = result[0];
+    let { access_token: token, refresh_token: refreshToken, token_expires_at: expiresAt } = result[0];
+
+    // Auto-refresh if expired
+    if (expiresAt && new Date(expiresAt) < new Date() && refreshToken) {
+      token = await refreshGmailToken(req.userId, refreshToken);
+    }
 
     // Fetch user rules
     const rules = await sql`SELECT sender, keyword, priority FROM email_rules WHERE user_id = ${req.userId}`;
@@ -277,10 +306,13 @@ router.post('/gmail/reply', auth, async (req, res) => {
     const { to, subject, body, threadId } = req.body;
     if (!to || !subject || !body) return res.status(400).json({ error: 'Destinataire, sujet et message requis' });
 
-    const result = await sql`SELECT access_token FROM connected_services WHERE user_id = ${req.userId} AND service_name = 'gmail'`;
+    const result = await sql`SELECT access_token, refresh_token, token_expires_at FROM connected_services WHERE user_id = ${req.userId} AND service_name = 'gmail'`;
     if (result.length === 0) return res.status(400).json({ error: 'Gmail non connecté' });
 
-    const { access_token: token } = result[0];
+    let { access_token: token, refresh_token: refreshToken, token_expires_at: expiresAt } = result[0];
+    if (expiresAt && new Date(expiresAt) < new Date() && refreshToken) {
+      token = await refreshGmailToken(req.userId, refreshToken);
+    }
 
     // Build raw email
     const emailParts = [
