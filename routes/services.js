@@ -359,19 +359,11 @@ router.post('/email-rules', auth, async (req, res) => {
     if (!['high', 'low'].includes(priority)) return res.status(400).json({ error: 'Priorité invalide' });
 
     if (keyword) {
-      await sql`
-        INSERT INTO email_rules (user_id, keyword, priority)
-        VALUES (${req.userId}, ${keyword.toLowerCase()}, ${priority})
-        ON CONFLICT (user_id, sender, keyword)
-        DO UPDATE SET priority = ${priority}
-      `;
+      await sql`DELETE FROM email_rules WHERE user_id = ${req.userId} AND keyword = ${keyword.toLowerCase()}`;
+      await sql`INSERT INTO email_rules (user_id, keyword, priority) VALUES (${req.userId}, ${keyword.toLowerCase()}, ${priority})`;
     } else if (sender) {
-      await sql`
-        INSERT INTO email_rules (user_id, sender, priority)
-        VALUES (${req.userId}, ${sender.toLowerCase()}, ${priority})
-        ON CONFLICT (user_id, sender, keyword)
-        DO UPDATE SET priority = ${priority}
-      `;
+      await sql`DELETE FROM email_rules WHERE user_id = ${req.userId} AND sender = ${sender.toLowerCase()}`;
+      await sql`INSERT INTO email_rules (user_id, sender, priority) VALUES (${req.userId}, ${sender.toLowerCase()}, ${priority})`;
     } else {
       return res.status(400).json({ error: 'Sender ou keyword requis' });
     }
