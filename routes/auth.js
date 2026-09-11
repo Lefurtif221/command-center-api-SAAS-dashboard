@@ -1,12 +1,15 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
+const { Resend } = require('resend');
 const sql = require('../db');
 const { auth, JWT_SECRET } = require('../middleware/auth');
 
 const router = express.Router();
 
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
+const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 
 // Verify Google ID token
 async function verifyGoogleToken(idToken) {
@@ -239,6 +242,91 @@ router.get('/google/callback', async (req, res) => {
   } catch (err) {
     console.error('Google callback error:', err);
     res.redirect(FRONTEND_URL + '/auth?error=' + encodeURIComponent(err.message));
+  }
+});
+
+// Forgot password - send reset email
+router.post('/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ error: 'Email requis' });
+
+    const result = await sql`SELECT id, name FROM users WHERE email = ${email}`;
+
+    // Always return success to prevent email enumeration
+    if (result.length === 0) {
+      return res.json({ success: true, message: 'Si un compte existe, un email a été envoyé.' });
+    }
+
+    const user = result[0];
+    const token = crypto.randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + 3600000); // 1 hour
+
+    // Delete old tokens for this user
+    await sql`DELETE FROM password_reset_tokens WHERE user_id = ${user.id}`;
+
+    // Insert new token
+    await sql`
+      INSERT INTO password_reset_tokens (user_id, token, expires_at)
+      VALUES (${user.id}, ${token}, ${expiresAt})
+    `;
+
+    if (resend) {
+      const resetUrl = `${FRONTEND_URL}/auth/reset-password?token=${token}`;
+      await resend.emails.send({
+        from: 'Personal Place <onboarding@resend.dev>',
+        to: email,
+        subject: 'Réinitialisation de votre mot de passe',
+        html: `
+          <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto; padding: 32px;">
+            <h2 style="color: #0b0f14; margin-bottom: 16px;">Bonjour ${user.name},</h2>
+            <p style="color: #666; font-size: 14px; line-height: 1.6;">
+              Vous avez demandé la réinitialisation de votre mot de passe. Cliquez sur le bouton ci-dessous :
+            </p>
+            <a href="${resetUrl}" style="display: inline-block; background: #00d1ff; color: #0b0f14; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 14px; margin: 16px 0;">
+              Réinitialiser mon mot de passe
+            </a>
+            <p style="color: #999; font-size: 12px; margin-top: 24px;">
+              Ce lien expire dans 1 heure. Si vous n'avez pas demandé cette réinitialisation, ignorez cet email.
+            </p>
+          </div>
+        `,
+      });
+    }
+
+    res.json({ success: true, message: 'Si un compte existe, un email a été envoyé.' });
+  } catch (err) {
+    console.error('Forgot password error:', err);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// Reset password - verify token and update password
+router.post('/reset-password', async (req, res) => {
+  try {
+    const { token, password } = req.body;
+    if (!token || !password) return res.status(400).json({ error: 'Token et mot de passe requis' });
+    if (password.length < 8) return res.status(400).json({ error: 'Le mot de passe doit contenir au moins 8 caractères' });
+
+    const result = await sql`
+      SELECT user_id FROM password_reset_tokens
+      WHERE token = ${token} AND expires_at > NOW()
+    `;
+
+    if (result.length === 0) {
+      return res.status(400).json({ error: 'Token invalide ou expiré' });
+    }
+
+    const userId = result[0].user_id;
+    const hash = await bcrypt.hash(password, 12);
+
+    await sql`UPDATE users SET password_hash = ${hash}, updated_at = NOW() WHERE id = ${userId}`;
+    await sql`DELETE FROM password_reset_tokens WHERE user_id = ${userId}`;
+
+    res.json({ success: true, message: 'Mot de passe réinitialisé avec succès' });
+  } catch (err) {
+    console.error('Reset password error:', err);
+    res.status(500).json({ error: 'Erreur serveur' });
   }
 });
 
