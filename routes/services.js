@@ -271,6 +271,43 @@ router.get('/gmail/emails', auth, async (req, res) => {
   }
 });
 
+// Reply to an email via Gmail
+router.post('/gmail/reply', auth, async (req, res) => {
+  try {
+    const { to, subject, body, threadId } = req.body;
+    if (!to || !subject || !body) return res.status(400).json({ error: 'Destinataire, sujet et message requis' });
+
+    const result = await sql`SELECT access_token FROM connected_services WHERE user_id = ${req.userId} AND service_name = 'gmail'`;
+    if (result.length === 0) return res.status(400).json({ error: 'Gmail non connecté' });
+
+    const { access_token: token } = result[0];
+
+    // Build raw email
+    const emailParts = [
+      `To: ${to}`,
+      `Subject: Re: ${subject.replace(/^Re:\s*/i, '')}`,
+      'Content-Type: text/plain; charset="UTF-8"',
+      '',
+      body,
+    ];
+    if (threadId) emailParts.splice(2, 0, `In-Reply-To: ${threadId}`);
+    const rawEmail = Buffer.from(emailParts.join('\r\n')).toString('base64url');
+
+    const gmailRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ raw: rawEmail }),
+    });
+    const gmailData = await gmailRes.json();
+    if (gmailData.error) throw new Error(gmailData.error.message);
+
+    res.json({ success: true, messageId: gmailData.id });
+  } catch (err) {
+    console.error('Gmail reply error:', err);
+    res.status(500).json({ error: err.message || "Erreur lors de l'envoi" });
+  }
+});
+
 // Get user email rules
 router.get('/email-rules', auth, async (req, res) => {
   try {
