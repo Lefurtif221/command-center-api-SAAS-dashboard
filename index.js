@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const authRoutes = require('./routes/auth');
 const servicesRoutes = require('./routes/services');
+const tasksRoutes = require('./routes/tasks');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -29,6 +30,7 @@ app.use(express.urlencoded({ extended: true }));
 
 app.use('/api/auth', authRoutes);
 app.use('/api/services', servicesRoutes);
+app.use('/api/tasks', tasksRoutes);
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });

@@ -199,6 +199,12 @@ router.get('/gmail/emails', auth, async (req, res) => {
     if (result.length === 0) return res.status(400).json({ error: 'Gmail non connecté' });
 
     const { access_token: token } = result[0];
+
+    // Fetch user rules
+    const rules = await sql`SELECT sender, priority FROM email_rules WHERE user_id = ${req.userId}`;
+    const rulesMap = {};
+    for (const r of rules) rulesMap[r.sender.toLowerCase()] = r.priority;
+
     const response = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=20', {
       headers: { Authorization: `Bearer ${token}` },
     });
@@ -217,15 +223,31 @@ router.get('/gmail/emails', auth, async (req, res) => {
       const date = headers.find(h => h.name === 'Date')?.value || '';
       const isUnread = msgData.labelIds?.includes('UNREAD');
 
+      // Extract sender email for rule matching
+      const emailMatch = from.match(/<(.+?)>/);
+      const senderEmail = emailMatch ? emailMatch[1] : from;
+      const senderName = from.split('<')[0].trim();
+
+      // Apply rules: check full email first, then domain
+      let priority = isUnread ? 'high' : 'low';
+      if (rulesMap[senderEmail.toLowerCase()]) {
+        priority = rulesMap[senderEmail.toLowerCase()];
+      } else {
+        const domain = senderEmail.split('@')[1];
+        if (rulesMap['@' + domain]) {
+          priority = rulesMap['@' + domain];
+        }
+      }
+
       emails.push({
         id: msg.id,
         subject,
-        sender: from.split('<')[0].trim(),
-        senderEmail: from,
+        sender: senderName,
+        senderEmail,
         date,
         time: date,
         preview: msgData.snippet || '',
-        priority: isUnread ? 'high' : 'low',
+        priority,
         unread: isUnread,
         service: 'gmail',
       });
@@ -234,6 +256,48 @@ router.get('/gmail/emails', auth, async (req, res) => {
   } catch (err) {
     console.error('Gmail fetch error:', err);
     res.status(500).json({ error: err.message || 'Erreur lors de la récupération des emails' });
+  }
+});
+
+// Get user email rules
+router.get('/email-rules', auth, async (req, res) => {
+  try {
+    const rules = await sql`SELECT id, sender, priority, created_at FROM email_rules WHERE user_id = ${req.userId} ORDER BY created_at DESC`;
+    res.json({ rules });
+  } catch (err) {
+    console.error('Get rules error:', err);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// Add or update email rule
+router.post('/email-rules', auth, async (req, res) => {
+  try {
+    const { sender, priority } = req.body;
+    if (!sender || !priority) return res.status(400).json({ error: 'Sender et priorité requis' });
+    if (!['high', 'low'].includes(priority)) return res.status(400).json({ error: 'Priorité invalide' });
+
+    await sql`
+      INSERT INTO email_rules (user_id, sender, priority)
+      VALUES (${req.userId}, ${sender.toLowerCase()}, ${priority})
+      ON CONFLICT (user_id, sender)
+      DO UPDATE SET priority = ${priority}
+    `;
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Add rule error:', err);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// Delete email rule
+router.delete('/email-rules/:id', auth, async (req, res) => {
+  try {
+    await sql`DELETE FROM email_rules WHERE id = ${req.params.id} AND user_id = ${req.userId}`;
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Delete rule error:', err);
+    res.status(500).json({ error: 'Erreur serveur' });
   }
 });
 
