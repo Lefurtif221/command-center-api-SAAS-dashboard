@@ -3,6 +3,7 @@ const express = require('express');
 const authRoutes = require('./routes/auth');
 const servicesRoutes = require('./routes/services');
 const tasksRoutes = require('./routes/tasks');
+const calendarRoutes = require('./routes/calendar');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -31,6 +32,7 @@ app.use(express.urlencoded({ extended: true }));
 app.use('/api/auth', authRoutes);
 app.use('/api/services', servicesRoutes);
 app.use('/api/tasks', tasksRoutes);
+app.use('/api/calendar', calendarRoutes);
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
