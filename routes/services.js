@@ -201,9 +201,13 @@ router.get('/gmail/emails', auth, async (req, res) => {
     const { access_token: token } = result[0];
 
     // Fetch user rules
-    const rules = await sql`SELECT sender, priority FROM email_rules WHERE user_id = ${req.userId}`;
-    const rulesMap = {};
-    for (const r of rules) rulesMap[r.sender.toLowerCase()] = r.priority;
+    const rules = await sql`SELECT sender, keyword, priority FROM email_rules WHERE user_id = ${req.userId}`;
+    const senderRules = {};
+    const keywordRules = [];
+    for (const r of rules) {
+      if (r.sender) senderRules[r.sender.toLowerCase()] = r.priority;
+      if (r.keyword) keywordRules.push({ keyword: r.keyword.toLowerCase(), priority: r.priority });
+    }
 
     const response = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=20', {
       headers: { Authorization: `Bearer ${token}` },
@@ -228,14 +232,22 @@ router.get('/gmail/emails', auth, async (req, res) => {
       const senderEmail = emailMatch ? emailMatch[1] : from;
       const senderName = from.split('<')[0].trim();
 
-      // Apply rules: check full email first, then domain
+      // Apply rules: check sender, then domain, then keywords
       let priority = isUnread ? 'high' : 'low';
-      if (rulesMap[senderEmail.toLowerCase()]) {
-        priority = rulesMap[senderEmail.toLowerCase()];
+      if (senderRules[senderEmail.toLowerCase()]) {
+        priority = senderRules[senderEmail.toLowerCase()];
       } else {
         const domain = senderEmail.split('@')[1];
-        if (rulesMap['@' + domain]) {
-          priority = rulesMap['@' + domain];
+        if (senderRules['@' + domain]) {
+          priority = senderRules['@' + domain];
+        }
+      }
+      // Check keywords in subject + preview
+      const textToCheck = (subject + ' ' + (msgData.snippet || '')).toLowerCase();
+      for (const kr of keywordRules) {
+        if (textToCheck.includes(kr.keyword)) {
+          priority = kr.priority;
+          break;
         }
       }
 
@@ -262,7 +274,7 @@ router.get('/gmail/emails', auth, async (req, res) => {
 // Get user email rules
 router.get('/email-rules', auth, async (req, res) => {
   try {
-    const rules = await sql`SELECT id, sender, priority, created_at FROM email_rules WHERE user_id = ${req.userId} ORDER BY created_at DESC`;
+    const rules = await sql`SELECT id, sender, keyword, priority, created_at FROM email_rules WHERE user_id = ${req.userId} ORDER BY created_at DESC`;
     res.json({ rules });
   } catch (err) {
     console.error('Get rules error:', err);
@@ -270,19 +282,30 @@ router.get('/email-rules', auth, async (req, res) => {
   }
 });
 
-// Add or update email rule
+// Add or update email rule (sender or keyword)
 router.post('/email-rules', auth, async (req, res) => {
   try {
-    const { sender, priority } = req.body;
-    if (!sender || !priority) return res.status(400).json({ error: 'Sender et priorité requis' });
+    const { sender, keyword, priority } = req.body;
+    if (!priority) return res.status(400).json({ error: 'Priorité requise' });
     if (!['high', 'low'].includes(priority)) return res.status(400).json({ error: 'Priorité invalide' });
 
-    await sql`
-      INSERT INTO email_rules (user_id, sender, priority)
-      VALUES (${req.userId}, ${sender.toLowerCase()}, ${priority})
-      ON CONFLICT (user_id, sender)
-      DO UPDATE SET priority = ${priority}
-    `;
+    if (keyword) {
+      await sql`
+        INSERT INTO email_rules (user_id, keyword, priority)
+        VALUES (${req.userId}, ${keyword.toLowerCase()}, ${priority})
+        ON CONFLICT (user_id, sender, keyword)
+        DO UPDATE SET priority = ${priority}
+      `;
+    } else if (sender) {
+      await sql`
+        INSERT INTO email_rules (user_id, sender, priority)
+        VALUES (${req.userId}, ${sender.toLowerCase()}, ${priority})
+        ON CONFLICT (user_id, sender, keyword)
+        DO UPDATE SET priority = ${priority}
+      `;
+    } else {
+      return res.status(400).json({ error: 'Sender ou keyword requis' });
+    }
     res.json({ success: true });
   } catch (err) {
     console.error('Add rule error:', err);
