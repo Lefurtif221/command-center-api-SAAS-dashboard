@@ -300,6 +300,46 @@ router.get('/gmail/emails', auth, async (req, res) => {
   }
 });
 
+// Fetch full email body by message ID
+router.get('/gmail/emails/:messageId', auth, async (req, res) => {
+  try {
+    const result = await sql`SELECT access_token, refresh_token, token_expires_at FROM connected_services WHERE user_id = ${req.userId} AND service_name = 'gmail'`;
+    if (result.length === 0) return res.status(400).json({ error: 'Gmail non connecté' });
+
+    let { access_token: token, refresh_token: refreshToken, token_expires_at: expiresAt } = result[0];
+    if (expiresAt && new Date(expiresAt) < new Date() && refreshToken) {
+      token = await refreshGmailToken(req.userId, refreshToken);
+    }
+
+    const msgResp = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${req.params.messageId}?format=full`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const msgData = await msgResp.json();
+    if (msgData.error) throw new Error(msgData.error.message);
+
+    function decodeBody(part) {
+      if (part.body && part.body.data) return Buffer.from(part.body.data, 'base64url').toString('utf-8')
+      if (part.parts) {
+        for (const p of part.parts) {
+          if (p.mimeType === 'text/plain' && p.body && p.body.data) return Buffer.from(p.body.data, 'base64url').toString('utf-8')
+          const nested = decodeBody(p)
+          if (nested) return nested
+        }
+        for (const p of part.parts) {
+          if (p.mimeType === 'text/html' && p.body && p.body.data) return Buffer.from(p.body.data, 'base64url').toString('utf-8')
+        }
+      }
+      return ''
+    }
+
+    const body = decodeBody(msgData.payload)
+    res.json({ body })
+  } catch (err) {
+    console.error('Gmail full email error:', err);
+    res.status(500).json({ error: err.message || 'Erreur lors de la récupération' });
+  }
+});
+
 // Reply to an email via Gmail
 router.post('/gmail/reply', auth, async (req, res) => {
   try {
