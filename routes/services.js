@@ -224,9 +224,16 @@ router.get('/gmail/emails', auth, async (req, res) => {
 
     let { access_token: token, refresh_token: refreshToken, token_expires_at: expiresAt } = result[0];
 
-    // Auto-refresh if expired
-    if (expiresAt && new Date(expiresAt) < new Date() && refreshToken) {
-      token = await refreshGmailToken(req.userId, refreshToken);
+    // Auto-refresh if expired or about to expire (within 5 min)
+    const now = new Date()
+    const expiresAtDate = expiresAt ? new Date(expiresAt) : null
+    if (expiresAtDate && expiresAtDate.getTime() - now.getTime() < 5 * 60 * 1000 && refreshToken) {
+      try {
+        token = await refreshGmailToken(req.userId, refreshToken);
+      } catch (refreshErr) {
+        console.error('Token refresh failed:', refreshErr.message);
+        return res.status(401).json({ error: 'Session Gmail expirée. Reconnectez Gmail.', reconnect: true });
+      }
     }
 
     // Fetch user rules
@@ -242,7 +249,23 @@ router.get('/gmail/emails', auth, async (req, res) => {
       headers: { Authorization: `Bearer ${token}` },
     });
     const data = await response.json();
-    if (data.error) throw new Error(data.error.message);
+
+    // If 401, try refresh once
+    if (data.error && data.error.code === 401 && refreshToken) {
+      try {
+        token = await refreshGmailToken(req.userId, refreshToken);
+        const retry = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=20', {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const retryData = await retry.json();
+        if (retryData.error) throw new Error(retryData.error.message);
+        Object.assign(data, retryData);
+      } catch {
+        return res.status(401).json({ error: 'Session Gmail expirée. Reconnectez Gmail.', reconnect: true });
+      }
+    } else if (data.error) {
+      throw new Error(data.error.message);
+    }
 
     const emails = [];
     for (const msg of (data.messages || []).slice(0, 10)) {
