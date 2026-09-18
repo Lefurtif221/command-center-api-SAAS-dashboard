@@ -363,6 +363,120 @@ router.get('/gmail/emails/:messageId', auth, async (req, res) => {
   }
 });
 
+// Summarize an email
+function stripHtml(html) {
+  return html
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>/gi, '\n\n')
+    .replace(/<\/div>/gi, '\n')
+    .replace(/<\/tr>/gi, '\n')
+    .replace(/<\/li>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function summarizeEmail(text, subject) {
+  if (!text) return 'Pas de contenu disponible.';
+
+  const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+  const summary = [];
+
+  // Extract dates
+  const dateRegex = /\b(\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}|\d{1,2}\s+(?:janvier|février|mars|avril|mai|juin|juillet|août|septembre|octobre|novembre|décembre)\s+\d{4})\b/gi;
+  const dates = text.match(dateRegex) || [];
+
+  // Extract action keywords
+  const actionRegex = /\b(?:merci de|veuillez|svp|s'il vous plaît|à faire|action requise|répondre|confirmer|valider|payer|signer|deadline|échéance)\b/gi;
+  const actions = text.match(actionRegex) || [];
+
+  // Extract numbers that look like amounts
+  const amountRegex = /\b\d+[\.,]\d{2}\s*(?:€|\$|EUR|USD|£)?\b/g;
+  const amounts = text.match(amountRegex) || [];
+
+  // Take first meaningful lines (skip greetings, signatures)
+  const skipPatterns = /^(?:bonjour|salut|hello|hi|dear|cher|madame|monsieur|merci|cordialement|best|regards|à bientôt|signature|unsubscribe|se désinscrire)/i;
+  const signaturePatterns = /(?:__|--|sent from|envoyé depuis|gmail|yahoo|outlook)/i;
+
+  let bodyLines = lines.filter(l => l.length > 15 && !skipPatterns.test(l) && !signaturePatterns.test(l));
+
+  // First 2-3 sentences are usually the key content
+  const keySentences = bodyLines.slice(0, 3);
+  if (keySentences.length > 0) {
+    summary.push(keySentences.join(' '));
+  }
+
+  // Add dates if found
+  if (dates.length > 0) {
+    summary.push('Dates mentionnées : ' + [...new Set(dates)].join(', '));
+  }
+
+  // Add amounts if found
+  if (amounts.length > 0) {
+    summary.push('Montants : ' + [...new Set(amounts)].join(', '));
+  }
+
+  // Add action items
+  if (actions.length > 0) {
+    summary.push('Action requise : ' + actions.slice(0, 3).join(', '));
+  }
+
+  const result = summary.join('\n\n');
+  return result.length > 10 ? result : (keySentences[0] || text.slice(0, 300) + '...');
+}
+
+router.get('/gmail/emails/:messageId/summary', auth, async (req, res) => {
+  try {
+    const result = await sql`SELECT access_token, refresh_token, token_expires_at FROM connected_services WHERE user_id = ${req.userId} AND service_name = 'gmail'`;
+    if (result.length === 0) return res.status(400).json({ error: 'Gmail non connecté' });
+
+    let { access_token: token, refresh_token: refreshToken, token_expires_at: expiresAt } = result[0];
+    if (expiresAt && new Date(expiresAt) < new Date() && refreshToken) {
+      token = await refreshGmailToken(req.userId, refreshToken);
+    }
+
+    const msgResp = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${req.params.messageId}?format=full`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const msgData = await msgResp.json();
+    if (msgData.error) throw new Error(msgData.error.message);
+
+    function decodeBody(part) {
+      if (part.body && part.body.data) return Buffer.from(part.body.data, 'base64url').toString('utf-8')
+      if (part.parts) {
+        for (const p of part.parts) {
+          if (p.mimeType === 'text/plain' && p.body && p.body.data) return Buffer.from(p.body.data, 'base64url').toString('utf-8')
+          const nested = decodeBody(p)
+          if (nested) return nested
+        }
+        for (const p of part.parts) {
+          if (p.mimeType === 'text/html' && p.body && p.body.data) return Buffer.from(p.body.data, 'base64url').toString('utf-8')
+        }
+      }
+      return ''
+    }
+
+    const rawBody = decodeBody(msgData.payload)
+    const cleanBody = stripHtml(rawBody)
+    const headers = msgData.payload?.headers || [];
+    const subject = headers.find(h => h.name === 'Subject')?.value || '';
+    const summary = summarizeEmail(cleanBody, subject)
+
+    res.json({ summary, body: cleanBody })
+  } catch (err) {
+    console.error('Gmail summary error:', err);
+    res.status(500).json({ error: err.message || 'Erreur lors du résumé' });
+  }
+});
+
 // Reply to an email via Gmail
 router.post('/gmail/reply', auth, async (req, res) => {
   try {
