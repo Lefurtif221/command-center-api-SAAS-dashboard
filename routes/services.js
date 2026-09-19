@@ -562,4 +562,154 @@ router.delete('/email-rules/:id', auth, async (req, res) => {
   }
 });
 
+// ========== WHATSAPP ==========
+
+const WHATSAPP_API = 'https://graph.facebook.com/v21.0';
+
+// Get WhatsApp config status
+router.get('/whatsapp/config', auth, async (req, res) => {
+  try {
+    const result = await sql`SELECT access_token, service_name FROM connected_services WHERE user_id = ${req.userId} AND service_name = 'whatsapp'`;
+    if (result.length === 0) return res.json({ connected: false });
+    res.json({
+      connected: true,
+      phoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID || null,
+    });
+  } catch (err) {
+    console.error('WhatsApp config error:', err);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// Connect WhatsApp (store token)
+router.post('/whatsapp/connect', auth, async (req, res) => {
+  try {
+    const { accessToken, phoneNumberId } = req.body;
+    if (!accessToken) return res.status(400).json({ error: 'Token requis' });
+
+    // Verify the token works
+    const verifyRes = await fetch(`${WHATSAPP_API}/${phoneNumberId || process.env.WHATSAPP_PHONE_NUMBER_ID}`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    const verifyData = await verifyRes.json();
+    if (verifyData.error) return res.status(400).json({ error: 'Token invalide' });
+
+    await sql`
+      INSERT INTO connected_services (user_id, service_name, access_token)
+      VALUES (${req.userId}, 'whatsapp', ${accessToken})
+      ON CONFLICT (user_id, service_name)
+      DO UPDATE SET access_token = ${accessToken}, created_at = NOW()
+    `;
+
+    res.json({ success: true, phoneNumberId: phoneNumberId || process.env.WHATSAPP_PHONE_NUMBER_ID });
+  } catch (err) {
+    console.error('WhatsApp connect error:', err);
+    res.status(500).json({ error: err.message || 'Erreur de connexion' });
+  }
+});
+
+// Disconnect WhatsApp
+router.delete('/whatsapp', auth, async (req, res) => {
+  try {
+    await sql`DELETE FROM connected_services WHERE user_id = ${req.userId} AND service_name = 'whatsapp'`;
+    res.json({ success: true });
+  } catch (err) {
+    console.error('WhatsApp disconnect error:', err);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// Send WhatsApp message
+router.post('/whatsapp/send', auth, async (req, res) => {
+  try {
+    const { to, message } = req.body;
+    if (!to || !message) return res.status(400).json({ error: 'Destinataire et message requis' });
+
+    const result = await sql`SELECT access_token FROM connected_services WHERE user_id = ${req.userId} AND service_name = 'whatsapp'`;
+    if (result.length === 0) return res.status(400).json({ error: 'WhatsApp non connecté' });
+
+    const token = result[0].access_token;
+    const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+
+    const waRes = await fetch(`${WHATSAPP_API}/${phoneNumberId}/messages`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        to: to.replace(/\D/g, ''),
+        type: 'text',
+        text: { body: message },
+      }),
+    });
+    const waData = await waRes.json();
+    if (waData.error) throw new Error(waData.error.message);
+
+    res.json({ success: true, messageId: waData.messages?.[0]?.id });
+  } catch (err) {
+    console.error('WhatsApp send error:', err);
+    res.status(500).json({ error: err.message || "Erreur lors de l'envoi" });
+  }
+});
+
+// Get WhatsApp conversations (messages from a number)
+router.get('/whatsapp/messages', auth, async (req, res) => {
+  try {
+    const result = await sql`SELECT access_token FROM connected_services WHERE user_id = ${req.userId} AND service_name = 'whatsapp'`;
+    if (result.length === 0) return res.status(400).json({ error: 'WhatsApp non connecté' });
+
+    const token = result[0].access_token;
+    const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+
+    // Get recent conversations
+    const waRes = await fetch(`${WHATSAPP_API}/${phoneNumberId}/conversations?fields=wa_id,name,last_message,unread_count&limit=20`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const waData = await waRes.json();
+    if (waData.error) throw new Error(waData.error.message);
+
+    res.json({ conversations: waData.data || [] });
+  } catch (err) {
+    console.error('WhatsApp messages error:', err);
+    res.status(500).json({ error: err.message || 'Erreur lors de la récupération' });
+  }
+});
+
+// Webhook for receiving WhatsApp messages
+router.get('/whatsapp/webhook', (req, res) => {
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+
+  if (mode === 'subscribe' && token === process.env.WHATSAPP_VERIFY_TOKEN) {
+    console.log('WhatsApp webhook verified');
+    res.status(200).send(challenge);
+  } else {
+    res.sendStatus(403);
+  }
+});
+
+router.post('/whatsapp/webhook', async (req, res) => {
+  try {
+    const body = req.body;
+    if (body.object !== 'whatsapp_business_account') return res.sendStatus(404);
+
+    const entry = body.entry?.[0];
+    const changes = entry?.changes?.[0];
+    if (changes?.field === 'messages') {
+      const messages = changes.value?.messages || [];
+      const contacts = changes.value?.contacts || [];
+
+      for (const msg of messages) {
+        console.log(`WhatsApp message from ${msg.from}: ${msg.text?.body || '[media]'}`);
+        // TODO: store in DB, notify connected users
+      }
+    }
+
+    res.sendStatus(200);
+  } catch (err) {
+    console.error('WhatsApp webhook error:', err);
+    res.sendStatus(200);
+  }
+});
+
 module.exports = router;
