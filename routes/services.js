@@ -626,9 +626,9 @@ router.post('/whatsapp/send', auth, async (req, res) => {
     if (!to || !message) return res.status(400).json({ error: 'Destinataire et message requis' });
 
     const result = await sql`SELECT access_token FROM connected_services WHERE user_id = ${req.userId} AND service_name = 'whatsapp'`;
-    if (result.length === 0) return res.status(400).json({ error: 'WhatsApp non connecté' });
+    const token = result.length > 0 ? result[0].access_token : process.env.WHATSAPP_ACCESS_TOKEN;
+    if (!token) return res.status(400).json({ error: 'WhatsApp non configuré' });
 
-    const token = result[0].access_token;
     const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
 
     const waRes = await fetch(`${WHATSAPP_API}/${phoneNumberId}/messages`, {
@@ -655,9 +655,9 @@ router.post('/whatsapp/send', auth, async (req, res) => {
 router.get('/whatsapp/messages', auth, async (req, res) => {
   try {
     const result = await sql`SELECT access_token FROM connected_services WHERE user_id = ${req.userId} AND service_name = 'whatsapp'`;
-    if (result.length === 0) return res.status(400).json({ error: 'WhatsApp non connecté' });
+    const token = result.length > 0 ? result[0].access_token : process.env.WHATSAPP_ACCESS_TOKEN;
+    if (!token) return res.status(400).json({ error: 'WhatsApp non configuré' });
 
-    const token = result[0].access_token;
     const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
 
     // Get recent conversations
