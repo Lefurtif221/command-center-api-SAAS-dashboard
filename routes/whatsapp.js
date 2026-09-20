@@ -75,7 +75,8 @@ function parseMessage(msg, userId) {
 async function startSession(userId) {
   if (clients.has(userId)) return;
 
-  const { state, saveCreds } = await useMultiFileAuthState(getSessionDir(userId));
+  const sessionDir = getSessionDir(userId);
+  const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
 
   const sock = makeWASocket({
     auth: state,
@@ -83,7 +84,7 @@ async function startSession(userId) {
     logger: pino({ level: 'silent' }),
     browser: ['Personal Place', 'Chrome', '4.0.0'],
     version: (await fetchLatestBaileysVersion()).version,
-    syncFullHistory: true,
+    syncFullHistory: false,
     getMessage: async () => undefined,
   });
 
@@ -213,6 +214,18 @@ async function startSession(userId) {
 router.post('/connect', auth, async (req, res) => {
   try {
     const userId = req.userId;
+
+    const existingClient = clients.get(userId);
+    if (existingClient) {
+      try { existingClient.end(); } catch (e) {}
+      clients.delete(userId);
+    }
+
+    const sessionDir = getSessionDir(userId);
+    if (fs.existsSync(sessionDir)) {
+      fs.rmSync(sessionDir, { recursive: true, force: true });
+    }
+
     await startSession(userId);
 
     const waitForQR = new Promise((resolve, reject) => {
@@ -326,8 +339,8 @@ router.post('/disconnect', auth, async (req, res) => {
     const userId = req.userId;
     const client = clients.get(userId);
     if (client) {
-      await client.logout();
-      client.end();
+      try { await client.logout(); } catch (e) {}
+      try { client.end(); } catch (e) {}
       clients.delete(userId);
     }
     qrCodes.delete(userId);
@@ -340,8 +353,10 @@ router.post('/disconnect', auth, async (req, res) => {
     const dir = path.join(__dirname, '..', 'whatsapp-sessions', userId);
     if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
 
-    const db = require('../db');
-    await db`DELETE FROM connected_services WHERE user_id = ${userId} AND service_name = 'whatsapp'`;
+    try {
+      const db = require('../db');
+      await db`DELETE FROM connected_services WHERE user_id = ${userId} AND service_name = 'whatsapp'`;
+    } catch (e) {}
 
     res.json({ success: true });
   } catch (err) {
