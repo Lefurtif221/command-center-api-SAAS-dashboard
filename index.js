@@ -4,6 +4,7 @@ const authRoutes = require('./routes/auth');
 const servicesRoutes = require('./routes/services');
 const tasksRoutes = require('./routes/tasks');
 const calendarRoutes = require('./routes/calendar');
+const whatsappRoutes = require('./routes/whatsapp');
 const { sql } = require('./db');
 
 const app = express();
@@ -44,6 +45,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/services', servicesRoutes);
 app.use('/api/tasks', tasksRoutes);
 app.use('/api/calendar', calendarRoutes);
+app.use('/api/whatsapp', whatsappRoutes);
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
