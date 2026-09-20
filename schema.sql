@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS connected_services (
   service_name VARCHAR(50) NOT NULL,
   access_token TEXT,
   refresh_token TEXT,
+  phone_number_id VARCHAR(100),
   token_expires_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   UNIQUE(user_id, service_name)

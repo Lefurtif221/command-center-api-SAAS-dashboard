@@ -4,9 +4,20 @@ const authRoutes = require('./routes/auth');
 const servicesRoutes = require('./routes/services');
 const tasksRoutes = require('./routes/tasks');
 const calendarRoutes = require('./routes/calendar');
+const { sql } = require('./db');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+
+// Auto-migrate: add phone_number_id column if missing
+(async () => {
+  try {
+    await sql`ALTER TABLE connected_services ADD COLUMN IF NOT EXISTS phone_number_id VARCHAR(100)`;
+    console.log('Migration: phone_number_id column ensured');
+  } catch (err) {
+    console.error('Migration error:', err.message);
+  }
+})();
 
 const allowedOrigins = (process.env.FRONTEND_URL || 'http://localhost:5173')
   .split(',')

@@ -581,25 +581,25 @@ router.get('/whatsapp/config', auth, async (req, res) => {
   }
 });
 
-// Connect WhatsApp (auto-connect with env credentials)
+// Connect WhatsApp (user provides their own token)
 router.post('/whatsapp/connect', auth, async (req, res) => {
   try {
-    const token = process.env.WHATSAPP_ACCESS_TOKEN;
-    const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
-    if (!token || !phoneNumberId) return res.status(400).json({ error: 'WhatsApp non configuré côté serveur' });
+    const { accessToken, phoneNumberId } = req.body;
+    if (!accessToken) return res.status(400).json({ error: 'Token requis' });
+    if (!phoneNumberId) return res.status(400).json({ error: 'Phone Number ID requis' });
 
     // Verify the token works
     const verifyRes = await fetch(`${WHATSAPP_API}/${phoneNumberId}`, {
-      headers: { Authorization: `Bearer ${token}` },
+      headers: { Authorization: `Bearer ${accessToken}` },
     });
     const verifyData = await verifyRes.json();
-    if (verifyData.error) return res.status(400).json({ error: 'Token invalide ou expiré' });
+    if (verifyData.error) return res.status(400).json({ error: 'Token invalide ou Phone Number ID incorrect' });
 
     await sql`
-      INSERT INTO connected_services (user_id, service_name, access_token)
-      VALUES (${req.userId}, 'whatsapp', ${token})
+      INSERT INTO connected_services (user_id, service_name, access_token, phone_number_id)
+      VALUES (${req.userId}, 'whatsapp', ${accessToken}, ${phoneNumberId})
       ON CONFLICT (user_id, service_name)
-      DO UPDATE SET access_token = ${token}, created_at = NOW()
+      DO UPDATE SET access_token = ${accessToken}, phone_number_id = ${phoneNumberId}, created_at = NOW()
     `;
 
     res.json({ success: true, phoneNumberId });
@@ -626,11 +626,10 @@ router.post('/whatsapp/send', auth, async (req, res) => {
     const { to, message } = req.body;
     if (!to || !message) return res.status(400).json({ error: 'Destinataire et message requis' });
 
-    const result = await sql`SELECT access_token FROM connected_services WHERE user_id = ${req.userId} AND service_name = 'whatsapp'`;
-    const token = result.length > 0 ? result[0].access_token : process.env.WHATSAPP_ACCESS_TOKEN;
-    if (!token) return res.status(400).json({ error: 'WhatsApp non configuré' });
-
-    const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+    const result = await sql`SELECT access_token, phone_number_id FROM connected_services WHERE user_id = ${req.userId} AND service_name = 'whatsapp'`;
+    const token = result.length > 0 ? result[0].access_token : null;
+    const phoneNumberId = result.length > 0 ? result[0].phone_number_id : null;
+    if (!token || !phoneNumberId) return res.status(400).json({ error: 'WhatsApp non configuré' });
 
     const waRes = await fetch(`${WHATSAPP_API}/${phoneNumberId}/messages`, {
       method: 'POST',
@@ -655,11 +654,10 @@ router.post('/whatsapp/send', auth, async (req, res) => {
 // Get WhatsApp conversations (messages from a number)
 router.get('/whatsapp/messages', auth, async (req, res) => {
   try {
-    const result = await sql`SELECT access_token FROM connected_services WHERE user_id = ${req.userId} AND service_name = 'whatsapp'`;
-    const token = result.length > 0 ? result[0].access_token : process.env.WHATSAPP_ACCESS_TOKEN;
-    if (!token) return res.status(400).json({ error: 'WhatsApp non configuré' });
-
-    const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+    const result = await sql`SELECT access_token, phone_number_id FROM connected_services WHERE user_id = ${req.userId} AND service_name = 'whatsapp'`;
+    const token = result.length > 0 ? result[0].access_token : null;
+    const phoneNumberId = result.length > 0 ? result[0].phone_number_id : null;
+    if (!token || !phoneNumberId) return res.status(400).json({ error: 'WhatsApp non configuré' });
 
     // Get recent conversations
     const waRes = await fetch(`${WHATSAPP_API}/${phoneNumberId}/conversations?fields=wa_id,name,last_message,unread_count&limit=20`, {
