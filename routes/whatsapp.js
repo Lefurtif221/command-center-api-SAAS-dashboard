@@ -1,5 +1,5 @@
 const express = require('express');
-const { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, isJidUser, jidNormalizedNumber } = require('@whiskeysockets/baileys');
+const { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, isJidUser, jidNormalizedUser } = require('@whiskeysockets/baileys');
 const qrcode = require('qrcode');
 const pino = require('pino');
 const path = require('path');
@@ -12,6 +12,7 @@ const qrCodes = new Map();
 const clients = new Map();
 const statusMap = new Map();
 const messageStore = new Map();
+const chatStore = new Map();
 const priorityStore = new Map();
 
 function getSessionDir(userId) {
@@ -25,40 +26,18 @@ function parseMessage(msg) {
   const isFromMe = msg.key.fromMe;
   const body = msg.message?.conversation
     || msg.message?.extendedTextMessage?.text
-    || msg.message?.extendedTextMessage?.contextInfo?.quotedMessage?.conversation
     || '';
   const from = isFromMe ? 'Moi' : (msg.pushName || chatId.split('@')[0]);
   const ts = typeof msg.messageTimestamp === 'number' ? msg.messageTimestamp : 0;
   return {
     id: msg.key.id,
+    key: msg.key,
     from,
     chatId,
     body,
     timestamp: ts ? new Date(ts * 1000).toISOString() : new Date().toISOString(),
     fromMe: isFromMe,
   };
-}
-
-async function loadHistory(sock, userId) {
-  const msgs = [];
-  try {
-    const chats = await sock.getChats();
-    console.log(`[WA ${userId}] Found ${chats.length} chats`);
-    for (const chat of chats.slice(0, 30)) {
-      try {
-        const history = await sock.getMessages(chat.id, 20);
-        for (const msg of history) {
-          msgs.push(parseMessage(msg));
-        }
-      } catch (e) {
-        console.error(`[WA ${userId}] Failed to load chat ${chat.id}:`, e.message);
-      }
-    }
-  } catch (e) {
-    console.error(`[WA ${userId}] getChats error:`, e.message);
-  }
-  msgs.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-  return msgs;
 }
 
 async function startSession(userId) {
@@ -72,6 +51,12 @@ async function startSession(userId) {
     logger: pino({ level: 'silent' }),
     browser: ['Personal Place', 'Chrome', '4.0.0'],
     version: (await fetchLatestBaileysVersion()).version,
+    syncFullHistory: true,
+    getMessage: async (key) => {
+      const msgs = messageStore.get(userId) || [];
+      const found = msgs.find(m => m.id === key.id);
+      return found?.key ? undefined : undefined;
+    },
   });
 
   sock.ev.on('creds.update', saveCreds);
@@ -108,7 +93,7 @@ async function startSession(userId) {
     }
 
     if (connection === 'open') {
-      console.log(`WhatsApp session ${userId} connected, loading history...`);
+      console.log(`WhatsApp session ${userId} connected`);
       qrCodes.delete(userId);
       statusMap.set(userId, 'connected');
 
@@ -121,22 +106,46 @@ async function startSession(userId) {
       } catch (err) {
         console.error('DB save error:', err);
       }
-
-      try {
-        const history = await loadHistory(sock, userId);
-        messageStore.set(userId, history);
-        console.log(`WhatsApp session ${userId}: loaded ${history.length} messages`);
-      } catch (err) {
-        console.error('History load error:', err);
-        messageStore.set(userId, []);
-      }
     }
   });
 
-  sock.ev.on('messages.upsert', async ({ messages, type }) => {
-    if (type !== 'notify') return;
+  sock.ev.on('messaging-history.set', ({ chats, messages, isLatest }) => {
+    console.log(`[WA ${userId}] History sync: ${chats.length} chats, ${messages.length} messages, latest=${isLatest}`);
+
+    const existingChats = chatStore.get(userId) || {};
+    for (const chat of chats) {
+      existingChats[chat.id] = chat;
+    }
+    chatStore.set(userId, existingChats);
+
+    const existingMsgs = messageStore.get(userId) || [];
+    for (const msg of messages) {
+      if (!msg.key) continue;
+      const parsed = parseMessage(msg);
+      const idx = existingMsgs.findIndex(m => m.id === parsed.id);
+      if (idx >= 0) {
+        existingMsgs[idx] = parsed;
+      } else {
+        existingMsgs.push(parsed);
+      }
+    }
+    existingMsgs.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    messageStore.set(userId, existingMsgs.slice(0, 2000));
+    console.log(`[WA ${userId}] Store: ${Object.keys(existingChats).length} chats, ${existingMsgs.length} messages`);
+  });
+
+  sock.ev.on('chats.upsert', (chats) => {
+    const existing = chatStore.get(userId) || {};
+    for (const chat of chats) {
+      existing[chat.id] = chat;
+    }
+    chatStore.set(userId, existing);
+  });
+
+  sock.ev.on('messages.upsert', ({ messages, type }) => {
     const existing = messageStore.get(userId) || [];
     for (const msg of messages) {
+      if (!msg.key) continue;
       const parsed = parseMessage(msg);
       const idx = existing.findIndex(m => m.id === parsed.id);
       if (idx >= 0) {
@@ -146,7 +155,7 @@ async function startSession(userId) {
       }
     }
     existing.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-    messageStore.set(userId, existing.slice(0, 1000));
+    messageStore.set(userId, existing.slice(0, 2000));
   });
 
   clients.set(userId, sock);
@@ -201,12 +210,7 @@ router.get('/messages', auth, async (req, res) => {
     const client = clients.get(userId);
     if (!client) return res.json({ messages: [] });
 
-    let messages = messageStore.get(userId) || [];
-    if (messages.length === 0) {
-      messages = await loadHistory(client, userId);
-      messageStore.set(userId, messages);
-    }
-
+    const messages = messageStore.get(userId) || [];
     const priorities = priorityStore.get(userId) || {};
     const result = messages.map(m => ({
       ...m,
@@ -274,6 +278,7 @@ router.post('/disconnect', auth, async (req, res) => {
     }
     qrCodes.delete(userId);
     messageStore.delete(userId);
+    chatStore.delete(userId);
     priorityStore.delete(userId);
     statusMap.delete(userId);
 
