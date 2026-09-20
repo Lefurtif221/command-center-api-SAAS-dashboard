@@ -84,7 +84,7 @@ async function startSession(userId) {
     logger: pino({ level: 'silent' }),
     browser: ['Personal Place', 'Chrome', '4.0.0'],
     version: (await fetchLatestBaileysVersion()).version,
-    syncFullHistory: false,
+    syncFullHistory: true,
     getMessage: async () => undefined,
   });
 
@@ -135,6 +135,12 @@ async function startSession(userId) {
       } catch (err) {
         console.error('DB save error:', err);
       }
+
+      setTimeout(() => {
+        const msgs = messageStore.get(userId) || [];
+        const chats = chatStore.get(userId) || {};
+        console.log('[WA ' + userId + '] After connect: ' + Object.keys(chats).length + ' chats, ' + msgs.length + ' msgs');
+      }, 10000);
     }
   });
 
@@ -151,7 +157,7 @@ async function startSession(userId) {
   sock.ev.on('messaging-history.set', ({ chats, messages, contacts }) => {
     console.log('[WA ' + userId + '] History: ' + chats.length + ' chats, ' + messages.length + ' messages, ' + (contacts ? contacts.length : 0) + ' contacts');
 
-    if (contacts) {
+    if (contacts && contacts.length > 0) {
       const existing = contactStore.get(userId) || {};
       for (const c of contacts) {
         if (c.id && (c.name || c.notify)) {
@@ -161,26 +167,30 @@ async function startSession(userId) {
       contactStore.set(userId, existing);
     }
 
-    const existingChats = chatStore.get(userId) || {};
-    for (const chat of chats) {
-      existingChats[chat.id] = chat;
-    }
-    chatStore.set(userId, existingChats);
-
-    const existingMsgs = messageStore.get(userId) || [];
-    for (const msg of messages) {
-      if (!msg.key) continue;
-      const parsed = parseMessage(msg, userId);
-      const idx = existingMsgs.findIndex(m => m.id === parsed.id);
-      if (idx >= 0) {
-        existingMsgs[idx] = parsed;
-      } else {
-        existingMsgs.push(parsed);
+    if (chats && chats.length > 0) {
+      const existingChats = chatStore.get(userId) || {};
+      for (const chat of chats) {
+        existingChats[chat.id] = chat;
       }
+      chatStore.set(userId, existingChats);
     }
-    existingMsgs.sort((a, b) => (b.timestampRaw || 0) - (a.timestampRaw || 0));
-    messageStore.set(userId, existingMsgs.slice(0, 2000));
-    console.log('[WA ' + userId + '] Store: ' + Object.keys(existingChats).length + ' chats, ' + existingMsgs.length + ' msgs');
+
+    if (messages && messages.length > 0) {
+      const existingMsgs = messageStore.get(userId) || [];
+      for (const msg of messages) {
+        if (!msg.key) continue;
+        const parsed = parseMessage(msg, userId);
+        const idx = existingMsgs.findIndex(m => m.id === parsed.id);
+        if (idx >= 0) {
+          existingMsgs[idx] = parsed;
+        } else {
+          existingMsgs.push(parsed);
+        }
+      }
+      existingMsgs.sort((a, b) => (b.timestampRaw || 0) - (a.timestampRaw || 0));
+      messageStore.set(userId, existingMsgs.slice(0, 2000));
+      console.log('[WA ' + userId + '] Store: ' + Object.keys(chatStore.get(userId) || {}).length + ' chats, ' + existingMsgs.length + ' msgs');
+    }
   });
 
   sock.ev.on('chats.upsert', (chats) => {
