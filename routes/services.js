@@ -581,27 +581,28 @@ router.get('/whatsapp/config', auth, async (req, res) => {
   }
 });
 
-// Connect WhatsApp (store token)
+// Connect WhatsApp (auto-connect with env credentials)
 router.post('/whatsapp/connect', auth, async (req, res) => {
   try {
-    const { accessToken, phoneNumberId } = req.body;
-    if (!accessToken) return res.status(400).json({ error: 'Token requis' });
+    const token = process.env.WHATSAPP_ACCESS_TOKEN;
+    const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+    if (!token || !phoneNumberId) return res.status(400).json({ error: 'WhatsApp non configuré côté serveur' });
 
     // Verify the token works
-    const verifyRes = await fetch(`${WHATSAPP_API}/${phoneNumberId || process.env.WHATSAPP_PHONE_NUMBER_ID}`, {
-      headers: { Authorization: `Bearer ${accessToken}` },
+    const verifyRes = await fetch(`${WHATSAPP_API}/${phoneNumberId}`, {
+      headers: { Authorization: `Bearer ${token}` },
     });
     const verifyData = await verifyRes.json();
-    if (verifyData.error) return res.status(400).json({ error: 'Token invalide' });
+    if (verifyData.error) return res.status(400).json({ error: 'Token invalide ou expiré' });
 
     await sql`
       INSERT INTO connected_services (user_id, service_name, access_token)
-      VALUES (${req.userId}, 'whatsapp', ${accessToken})
+      VALUES (${req.userId}, 'whatsapp', ${token})
       ON CONFLICT (user_id, service_name)
-      DO UPDATE SET access_token = ${accessToken}, created_at = NOW()
+      DO UPDATE SET access_token = ${token}, created_at = NOW()
     `;
 
-    res.json({ success: true, phoneNumberId: phoneNumberId || process.env.WHATSAPP_PHONE_NUMBER_ID });
+    res.json({ success: true, phoneNumberId });
   } catch (err) {
     console.error('WhatsApp connect error:', err);
     res.status(500).json({ error: err.message || 'Erreur de connexion' });
