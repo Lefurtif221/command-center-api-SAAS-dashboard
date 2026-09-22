@@ -245,9 +245,17 @@ router.post('/connect', auth, async (req, res) => {
 
     const existingClient = clients.get(userId);
     if (existingClient) {
+      try { await existingClient.logout(); } catch (e) {}
       try { existingClient.end(); } catch (e) {}
       clients.delete(userId);
     }
+
+    qrCodes.delete(userId);
+    statusMap.delete(userId);
+    messageStore.delete(userId);
+    chatStore.delete(userId);
+    contactStore.delete(userId);
+    historySynced.delete(userId);
 
     const sessionDir = getSessionDir(userId);
     if (fs.existsSync(sessionDir)) {
@@ -268,9 +276,13 @@ router.post('/connect', auth, async (req, res) => {
           clearInterval(interval);
           resolve('already_connected');
         }
-        if (attempts > 30) {
+        if (statusMap.get(userId) === 'disconnected') {
           clearInterval(interval);
-          reject(new Error('Timeout'));
+          reject(new Error('Session deconnectee'));
+        }
+        if (attempts > 90) {
+          clearInterval(interval);
+          reject(new Error('Timeout - QR non genere'));
         }
       }, 500);
     });
