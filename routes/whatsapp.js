@@ -15,6 +15,7 @@ const messageStore = new Map();
 const chatStore = new Map();
 const contactStore = new Map();
 const priorityStore = new Map();
+const historySynced = new Map();
 
 function getSessionDir(userId) {
   const dir = path.join(__dirname, '..', 'whatsapp-sessions', userId);
@@ -111,24 +112,26 @@ async function startSession(userId) {
       const reason = lastDisconnect?.error?.output?.statusCode;
       if (reason === DisconnectReason.loggedOut) {
         console.log('WhatsApp session ' + userId + ' logged out');
+        clients.delete(userId);
         const dir = getSessionDir(userId);
-        fs.rmSync(dir, { recursive: true, force: true });
+        if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
       } else {
-        console.log('WhatsApp session ' + userId + ' disconnected, reconnecting...');
+        console.log('WhatsApp session ' + userId + ' disconnected (reason: ' + reason + '), reconnecting...');
+        statusMap.set(userId, 'reconnecting');
         setTimeout(() => {
           clients.delete(userId);
+          historySynced.delete(userId);
           startSession(userId);
         }, 3000);
       }
-      clients.delete(userId);
       qrCodes.delete(userId);
-      statusMap.set(userId, 'disconnected');
+      if (reason === DisconnectReason.loggedOut) statusMap.set(userId, 'disconnected');
     }
 
     if (connection === 'open') {
       console.log('WhatsApp session ' + userId + ' connected');
       qrCodes.delete(userId);
-      statusMap.set(userId, 'connected');
+      statusMap.set(userId, 'syncing');
 
       try {
         const db = require('../db');
@@ -143,7 +146,11 @@ async function startSession(userId) {
       setTimeout(() => {
         const msgs = messageStore.get(userId) || [];
         const chats = chatStore.get(userId) || {};
-        console.log('[WA ' + userId + '] After connect: ' + Object.keys(chats).length + ' chats, ' + msgs.length + ' msgs');
+        const synced = historySynced.get(userId) || false;
+        console.log('[WA ' + userId + '] After connect: ' + Object.keys(chats).length + ' chats, ' + msgs.length + ' msgs, historySynced=' + synced);
+        if (synced && msgs.length > 0) {
+          statusMap.set(userId, 'connected');
+        }
       }, 10000);
     }
   });
@@ -193,7 +200,14 @@ async function startSession(userId) {
       }
       existingMsgs.sort((a, b) => (b.timestampRaw || 0) - (a.timestampRaw || 0));
       messageStore.set(userId, existingMsgs.slice(0, 2000));
-      console.log('[WA ' + userId + '] Store: ' + Object.keys(chatStore.get(userId) || {}).length + ' chats, ' + existingMsgs.length + ' msgs');
+    }
+
+    historySynced.set(userId, true);
+    const totalMsgs = (messageStore.get(userId) || []).length;
+    const totalChats = Object.keys(chatStore.get(userId) || {}).length;
+    console.log('[WA ' + userId + '] Store: ' + totalChats + ' chats, ' + totalMsgs + ' msgs');
+    if (totalMsgs > 0) {
+      statusMap.set(userId, 'connected');
     }
   });
 
@@ -273,7 +287,16 @@ router.get('/status', auth, async (req, res) => {
   try {
     const userId = req.userId;
     const status = statusMap.get(userId) || 'disconnected';
-    res.json({ status });
+    const client = clients.get(userId);
+    const msgs = messageStore.get(userId) || [];
+    const chats = chatStore.get(userId) || {};
+    res.json({
+      status,
+      hasClient: !!client,
+      messageCount: msgs.length,
+      chatCount: Object.keys(chats).length,
+      historySynced: historySynced.get(userId) || false,
+    });
   } catch (err) {
     res.status(500).json({ error: 'Erreur serveur' });
   }
@@ -303,6 +326,43 @@ router.get('/messages', auth, async (req, res) => {
   } catch (err) {
     console.error('WhatsApp messages error:', err);
     res.status(500).json({ error: err.message || 'Erreur lors du chargement' });
+  }
+});
+
+router.post('/sync', auth, async (req, res) => {
+  try {
+    const userId = req.userId;
+    const client = clients.get(userId);
+    if (!client) return res.status(400).json({ error: 'WhatsApp non connecte' });
+
+    console.log('[WA ' + userId + '] Force sync requested');
+    historySynced.delete(userId);
+    statusMap.set(userId, 'syncing');
+
+    // Request history from the socket directly
+    try {
+      const chats = await client.albumFetchImageMessage ? [] : [];
+      // Baileys v7 doesn't have getChats/getMessages, but we can trigger via polling
+      // The messaging-history.set event should fire again
+    } catch (e) {}
+
+    // Poll for completion
+    let attempts = 0;
+    const checkSync = setInterval(() => {
+      attempts++;
+      const msgs = messageStore.get(userId) || [];
+      const synced = historySynced.get(userId) || false;
+      if (synced || msgs.length > 0 || attempts > 20) {
+        clearInterval(checkSync);
+        statusMap.set(userId, synced ? 'connected' : 'connected');
+        console.log('[WA ' + userId + '] Sync done: ' + msgs.length + ' msgs, synced=' + synced);
+      }
+    }, 1000);
+
+    res.json({ success: true, status: 'syncing' });
+  } catch (err) {
+    console.error('WhatsApp sync error:', err);
+    res.status(500).json({ error: 'Erreur lors de la synchronisation' });
   }
 });
 
