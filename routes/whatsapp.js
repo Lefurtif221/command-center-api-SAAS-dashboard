@@ -57,7 +57,10 @@ function parseMessage(msg, userId) {
   else if (m.documentMessage || m.documentWithCaptionMessage) type = 'document';
   else if (m.stickerMessage) type = 'sticker';
   else if (m.protocolMessage) type = 'protocol';
-  else if (m.reactionMessage) type = 'reaction';
+  else if (m.reactionMessage) {
+    type = 'reaction';
+    body = m.reactionMessage.text || '[reaction]';
+  }
 
   return {
     id: msg.key.id,
@@ -69,6 +72,7 @@ function parseMessage(msg, userId) {
     timestampRaw: ts,
     fromMe: isFromMe,
     type,
+    hasMedia: !!(m.imageMessage || m.videoMessage || m.audioMessage || m.documentMessage || m.documentWithCaptionMessage || m.stickerMessage),
   };
 }
 
@@ -291,6 +295,7 @@ router.get('/messages', auth, async (req, res) => {
       timestamp: m.timestamp,
       fromMe: m.fromMe,
       type: m.type,
+      hasMedia: m.hasMedia,
       priority: priorities[m.chatId] || 'none',
     }));
 
@@ -322,6 +327,46 @@ router.post('/send', auth, async (req, res) => {
   } catch (err) {
     console.error('WhatsApp send error:', err);
     res.status(500).json({ error: err.message || "Erreur lors de l'envoi" });
+  }
+});
+
+router.get('/media/:messageId', auth, async (req, res) => {
+  try {
+    const userId = req.userId;
+    const client = clients.get(userId);
+    if (!client) return res.status(400).json({ error: 'WhatsApp non connecte' });
+
+    const { messageId } = req.params;
+    const messages = messageStore.get(userId) || [];
+    const msg = messages.find(m => m.id === messageId);
+    if (!msg || !msg.hasMedia) return res.status(404).json({ error: 'Media non trouve' });
+
+    const buffer = await client.downloadMediaMessage(msg.key);
+    if (!buffer) return res.status(404).json({ error: 'Impossible de telecharger le media' });
+
+    const m = msg.key;
+    let mimeType = 'image/jpeg';
+    let ext = 'jpg';
+
+    const rawMsg = messages.find(rm => rm.id === messageId);
+    if (rawMsg) {
+      // Try to detect from the stored raw message
+    }
+
+    // Detect mime from buffer header
+    if (buffer[0] === 0x89 && buffer[1] === 0x50) { mimeType = 'image/png'; ext = 'png'; }
+    else if (buffer[0] === 0x47 && buffer[1] === 0x49) { mimeType = 'image/gif'; ext = 'gif'; }
+    else if (buffer[0] === 0x52 && buffer[1] === 0x49) { mimeType = 'image/webp'; ext = 'webp'; }
+    else if (buffer[0] === 0x1A && buffer[1] === 0x45) { mimeType = 'video/mp4'; ext = 'mp4'; }
+    else if (buffer[0] === 0x4F && buffer[1] === 0x67) { mimeType = 'audio/ogg'; ext = 'ogg'; }
+    else if (buffer[0] === 0x25 && buffer[1] === 0x50) { mimeType = 'application/pdf'; ext = 'pdf'; }
+
+    res.setHeader('Content-Type', mimeType);
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.send(buffer);
+  } catch (err) {
+    console.error('WhatsApp media error:', err);
+    res.status(500).json({ error: 'Erreur lors du telechargement' });
   }
 });
 
