@@ -107,6 +107,8 @@ CREATE TABLE IF NOT EXISTS subscriptions (
   status VARCHAR(20) NOT NULL DEFAULT 'active',
   provider VARCHAR(30) DEFAULT 'cinetpay',
   provider_tx_id VARCHAR(255),
+  provider_ref VARCHAR(255),
+  notify_token TEXT,
   amount NUMERIC(12, 2),
   currency VARCHAR(10) DEFAULT 'XOF',
   period_days INTEGER DEFAULT 31,

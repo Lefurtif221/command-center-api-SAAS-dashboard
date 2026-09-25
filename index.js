@@ -8,6 +8,7 @@ const calendarRoutes = require('./routes/calendar');
 const whatsappRoutes = require('./routes/whatsapp');
 const teamsRoutes = require('./routes/teams');
 const statsRoutes = require('./routes/stats');
+const payRoutes = require('./routes/pay');
 const { ADMIN_EMAILS } = require('./middleware/plan');
 const sql = require('./db');
 
@@ -108,6 +109,8 @@ if (sentryEnabled) {
       )
     `;
     await sql`CREATE INDEX IF NOT EXISTS idx_subscriptions_user ON subscriptions(user_id, status, expires_at DESC)`;
+    await sql`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS notify_token TEXT`;
+    await sql`ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS provider_ref TEXT`;
     await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS plan VARCHAR(20) DEFAULT 'free'`;
     // Stats : historique des sessions de focus + date de fin des taches
     await sql`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ`;
@@ -176,6 +179,7 @@ app.use('/api/calendar', calendarRoutes);
 app.use('/api/whatsapp', whatsappRoutes);
 app.use('/api/teams', teamsRoutes);
 app.use('/api/stats', statsRoutes);
+app.use('/api/pay', payRoutes);
 
 app.get('/api/health', async (req, res) => {
   try {

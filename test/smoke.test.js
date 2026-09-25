@@ -390,6 +390,34 @@ test('stats : sessions de focus, historique gratuit 7 jours, compte admin en Pro
   assert.strictEqual(adminStats.data.focus.length, 30);
 });
 
+test('paiement : init sans mot de passe API -> 503, abonnement et webhook vides', async () => {
+  const email = `smoke-pay-${uniq()}@test.local`;
+  const signup = await api('/api/auth/signup', {
+    method: 'POST',
+    body: { name: 'Pay User', email, password: 'password123' },
+  });
+  assert.strictEqual(signup.status, 201);
+  ids.push(signup.data.user.id);
+  const token = signup.data.token;
+
+  // Mot de passe API absent en CI : le paiement est signale comme non configure
+  const init = await api('/api/pay/init', { method: 'POST', token, body: { plan: 'pro' } });
+  assert.strictEqual(init.status, 503);
+  assert.strictEqual(init.data.code, 'PAY_NOT_CONFIGURED');
+
+  const sub = await api('/api/pay/subscription', { token });
+  assert.strictEqual(sub.status, 200);
+  assert.strictEqual(sub.data.plan, 'free');
+  assert.strictEqual(sub.data.subscription, null);
+
+  const status = await api('/api/pay/status?transaction_id=inconnu', { token });
+  assert.strictEqual(status.status, 404);
+
+  // Le webhook est publique et ne doit jamais echouer
+  const notify = await api('/api/pay/notify', { method: 'POST', body: {} });
+  assert.strictEqual(notify.status, 200);
+});
+
 test('nettoyage des comptes de test', async () => {
   const sql = require(path.join(__dirname, '..', 'db'));
   for (const id of ids) {

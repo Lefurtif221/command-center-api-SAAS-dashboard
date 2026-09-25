@@ -27,7 +27,23 @@ async function getPlan(userId) {
   const rows = await sql`SELECT plan, email FROM users WHERE id = ${userId}`;
   const row = rows[0];
   const admin = isAdminEmail(row && row.email);
-  const plan = admin || (row && row.plan === 'pro') ? 'pro' : 'free';
+  let plan = admin || (row && row.plan === 'pro') ? 'pro' : 'free';
+
+  // Un compte passe en Pro par paiement : l'abonnement doit encore etre valide.
+  // Sans aucun abonnement (grant manuel), on garde le plan en l'etat.
+  if (!admin && plan === 'pro') {
+    const subs = await sql`SELECT 1 FROM subscriptions WHERE user_id = ${userId} LIMIT 1`;
+    if (subs.length > 0) {
+      const active = await sql`
+        SELECT 1 FROM subscriptions
+        WHERE user_id = ${userId} AND status = 'active'
+          AND (expires_at IS NULL OR expires_at > NOW())
+        LIMIT 1
+      `;
+      if (active.length === 0) plan = 'free';
+    }
+  }
+
   return { plan, limits: PLANS[plan], admin };
 }
 
