@@ -10,9 +10,10 @@ const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
 const API_URL = process.env.API_URL || 'http://localhost:3001';
 const COUNTRY = (process.env.CINETPAY_COUNTRY || 'SN').toUpperCase();
 
-// Offre Pro : 31 jours (montant entre 100 et 2 500 000 XOF)
+// Offres Pro : 2000 FCFA le premier mois, puis 2500 FCFA par mois (31 jours)
 const OFFERS = {
-  pro: { amount: 2000, currency: 'XOF', periodDays: 31, designation: 'Personal Place Formule Pro 31 jours' },
+  firstMonth: { amount: 2000, currency: 'XOF', periodDays: 31, designation: 'Formule Pro - premier mois 2000 FCFA' },
+  renewal: { amount: 2500, currency: 'XOF', periodDays: 31, designation: 'Formule Pro - mensuel 2500 FCFA' },
 };
 
 // Un client par paire de credentials (le SDK cache le token JWT)
@@ -92,9 +93,15 @@ router.post('/init', auth, async (req, res) => {
       return res.status(503).json({ error: 'Paiement pas encore configure', code: 'PAY_NOT_CONFIGURED' });
     }
 
-    const offer = OFFERS.pro;
     const user = await sql`SELECT name, email FROM users WHERE id = ${req.userId}`;
     if (user.length === 0) return res.status(404).json({ error: 'Utilisateur introuvable' });
+
+    // Premier abonnement -> tarif d'introduction, sinon tarif mensuel
+    const alreadyPaid = await sql`
+      SELECT 1 FROM subscriptions WHERE user_id = ${req.userId} AND status = 'active' LIMIT 1
+    `;
+    const isFirstMonth = alreadyPaid.length === 0;
+    const offer = isFirstMonth ? OFFERS.firstMonth : OFFERS.renewal;
 
     merchantTransactionId = `pp${Date.now()}${Math.random().toString(36).slice(2, 6)}`.slice(0, 30);
     await sql`
@@ -133,6 +140,7 @@ router.post('/init', auth, async (req, res) => {
       amount: offer.amount,
       currency: offer.currency,
       period_days: offer.periodDays,
+      first_month: isFirstMonth,
     });
   } catch (err) {
     // Echec de l'init : on ne garde pas d'abonnement fantome en attente

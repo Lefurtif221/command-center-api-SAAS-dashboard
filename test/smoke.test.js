@@ -425,6 +425,20 @@ test('paiement : init retourne le guichet (ou 503 sans identifiants), abonnement
   // Le webhook est publique et ne doit jamais echouer
   const notify = await api('/api/pay/notify', { method: 'POST', body: {} });
   assert.strictEqual(notify.status, 200);
+
+  if (process.env.CINETPAY_API_KEY && process.env.CINETPAY_API_PASSWORD) {
+    // Deuxieme mois : l utilisateur a deja un abonnement actif -> tarif mensuel 2500
+    const sql = require(path.join(__dirname, '..', 'db'));
+    await sql`
+      INSERT INTO subscriptions (user_id, plan, status, provider, provider_tx_id, amount, currency, period_days, expires_at)
+      VALUES (${signup.data.user.id}, 'pro', 'active', 'cinetpay', ${'pp' + Date.now() + 'renew'},
+              2500, 'XOF', 31, ${new Date(Date.now() + 31 * 86400000).toISOString()})
+    `;
+    const renew = await api('/api/pay/init', { method: 'POST', token, body: { plan: 'pro' } });
+    assert.strictEqual(renew.status, 200);
+    assert.strictEqual(renew.data.amount, 2500);
+    assert.strictEqual(renew.data.first_month, false);
+  }
 });
 
 test('nettoyage des comptes de test', async () => {
