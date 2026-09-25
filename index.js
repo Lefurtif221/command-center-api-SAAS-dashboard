@@ -7,6 +7,8 @@ const tasksRoutes = require('./routes/tasks');
 const calendarRoutes = require('./routes/calendar');
 const whatsappRoutes = require('./routes/whatsapp');
 const teamsRoutes = require('./routes/teams');
+const statsRoutes = require('./routes/stats');
+const { ADMIN_EMAILS } = require('./middleware/plan');
 const sql = require('./db');
 
 const app = express();
@@ -107,6 +109,23 @@ if (sentryEnabled) {
     `;
     await sql`CREATE INDEX IF NOT EXISTS idx_subscriptions_user ON subscriptions(user_id, status, expires_at DESC)`;
     await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS plan VARCHAR(20) DEFAULT 'free'`;
+    // Stats : historique des sessions de focus + date de fin des taches
+    await sql`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ`;
+    await sql`
+      CREATE TABLE IF NOT EXISTS focus_sessions (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        duration_seconds INTEGER NOT NULL DEFAULT 1500,
+        task_title VARCHAR(500),
+        started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `;
+    await sql`CREATE INDEX IF NOT EXISTS idx_focus_sessions_user_date ON focus_sessions(user_id, started_at DESC)`;
+    // Comptes proprietaire : Pro permanent
+    for (const email of ADMIN_EMAILS) {
+      await sql`UPDATE users SET plan = 'pro' WHERE lower(email) = ${email}`;
+    }
     console.log('Migration: schema ensured');
   } catch (err) {
     console.error('Migration error:', err.message);
@@ -156,6 +175,7 @@ app.use('/api/tasks', tasksRoutes);
 app.use('/api/calendar', calendarRoutes);
 app.use('/api/whatsapp', whatsappRoutes);
 app.use('/api/teams', teamsRoutes);
+app.use('/api/stats', statsRoutes);
 
 app.get('/api/health', async (req, res) => {
   try {

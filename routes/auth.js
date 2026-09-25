@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const { Resend } = require('resend');
 const sql = require('../db');
 const { auth, JWT_SECRET } = require('../middleware/auth');
+const { publicUser } = require('../middleware/plan');
 
 const router = express.Router();
 
@@ -51,7 +52,7 @@ router.post('/signup', async (req, res) => {
     const user = result[0];
     const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: '7d' });
 
-    res.status(201).json({ token, user });
+    res.status(201).json({ token, user: publicUser(user) });
   } catch (err) {
     console.error('Signup error:', err);
     res.status(500).json({ error: 'Erreur serveur' });
@@ -79,7 +80,7 @@ router.post('/login', async (req, res) => {
 
     const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: '7d' });
 
-    res.json({ token, user: { id: user.id, name: user.name, email: user.email, initials: user.initials, plan: user.plan } });
+    res.json({ token, user: publicUser({ id: user.id, name: user.name, email: user.email, initials: user.initials, plan: user.plan }) });
   } catch (err) {
     console.error('Login error:', err);
     res.status(500).json({ error: 'Erreur serveur' });
@@ -128,7 +129,7 @@ router.post('/google', async (req, res) => {
     const user = result[0];
     const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: '7d' });
 
-    res.json({ token, user });
+    res.json({ token, user: publicUser(user) });
   } catch (err) {
     console.error('Google OAuth error:', err);
     res.status(500).json({ error: 'Authentification Google échouée' });
@@ -142,7 +143,7 @@ router.get('/me', auth, async (req, res) => {
     if (result.length === 0) {
       return res.status(404).json({ error: 'Utilisateur non trouvé' });
     }
-    res.json({ user: result[0] });
+    res.json({ user: publicUser(result[0]) });
   } catch (err) {
     console.error('Me error:', err);
     res.status(500).json({ error: 'Erreur serveur' });
@@ -163,7 +164,7 @@ router.put('/profile', auth, async (req, res) => {
       WHERE id = ${req.userId}
       RETURNING id, name, email, initials, plan
     `;
-    res.json({ user: result[0] });
+    res.json({ user: publicUser(result[0]) });
   } catch (err) {
     console.error('Profile error:', err);
     res.status(500).json({ error: 'Erreur serveur' });
@@ -238,7 +239,7 @@ router.get('/google/callback', async (req, res) => {
     const user = result[0];
     const appToken = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: '7d' });
 
-    res.redirect(FRONTEND_URL + '/auth?token=' + appToken + '&user=' + encodeURIComponent(JSON.stringify(user)));
+    res.redirect(FRONTEND_URL + '/auth?token=' + appToken + '&user=' + encodeURIComponent(JSON.stringify(publicUser(user))));
   } catch (err) {
     console.error('Google callback error:', err);
     res.redirect(FRONTEND_URL + '/auth?error=' + encodeURIComponent(err.message));

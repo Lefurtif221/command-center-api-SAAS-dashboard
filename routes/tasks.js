@@ -55,10 +55,12 @@ router.post('/', auth, async (req, res) => {
 router.put('/:id', auth, async (req, res) => {
   try {
     const { title, completed, priority, due_date, team_id } = req.body;
+    const completedAt = completed === true ? sql`NOW()` : completed === false ? sql`NULL` : sql`completed_at`;
     const result = await sql`
       UPDATE tasks SET
         title = COALESCE(${title}, title),
         completed = COALESCE(${completed}, completed),
+        completed_at = ${completedAt},
         priority = COALESCE(${priority}, priority),
         due_date = ${due_date !== undefined ? due_date : sql`due_date`},
         updated_at = NOW()

@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   user_id UUID REFERENCES users(id) ON DELETE CASCADE,
   title VARCHAR(500) NOT NULL,
   completed BOOLEAN DEFAULT FALSE,
+  completed_at TIMESTAMPTZ,
   priority VARCHAR(20) DEFAULT 'medium',
   due_date DATE,
   team_id UUID REFERENCES teams(id) ON DELETE SET NULL,
@@ -116,3 +117,15 @@ CREATE TABLE IF NOT EXISTS subscriptions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_subscriptions_user ON subscriptions(user_id, status, expires_at DESC);
+
+-- Sessions de focus (Pomodoro / minuterie) : source des statistiques
+CREATE TABLE IF NOT EXISTS focus_sessions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+  duration_seconds INTEGER NOT NULL DEFAULT 1500,
+  task_title VARCHAR(500),
+  started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_focus_sessions_user_date ON focus_sessions(user_id, started_at DESC);

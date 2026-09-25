@@ -39,7 +39,7 @@ async function waitForHealth(timeoutMs = 30000) {
 before(async () => {
   child = spawn(process.execPath, ['index.js'], {
     cwd: path.join(__dirname, '..'),
-    env: { ...process.env, PORT: String(PORT) },
+    env: { ...process.env, PORT: String(PORT), ADMIN_EMAILS: 'smoke-admin@test.local' },
     stdio: 'ignore',
   });
   await waitForHealth();
@@ -310,6 +310,84 @@ test('formule gratuite : 1 equipe max, 3 membres max, puis liberations en pro', 
   await api(`/api/teams/${team1.data.team.id}`, { method: 'DELETE', token: ownerToken });
   await api(`/api/teams/${team3.data.team.id}`, { method: 'DELETE', token: ownerToken });
   await sql`UPDATE users SET plan = 'free' WHERE id = ${ownerId}`;
+});
+
+test('stats : sessions de focus, historique gratuit 7 jours, compte admin en Pro', async () => {
+  const email = `smoke-stats-${uniq()}@test.local`;
+  const signup = await api('/api/auth/signup', {
+    method: 'POST',
+    body: { name: 'Stats User', email, password: 'password123' },
+  });
+  assert.strictEqual(signup.status, 201);
+  ids.push(signup.data.user.id);
+  const token = signup.data.token;
+
+  const anon = await api('/api/stats/overview');
+  assert.strictEqual(anon.status, 401);
+
+  const tooShort = await api('/api/stats/focus', {
+    method: 'POST', token, body: { duration_seconds: 10 },
+  });
+  assert.strictEqual(tooShort.status, 400);
+
+  const saved = await api('/api/stats/focus', {
+    method: 'POST', token, body: { duration_seconds: 1500, task_title: 'Deep work' },
+  });
+  assert.strictEqual(saved.status, 201);
+
+  // Formule gratuite : demande 30 jours, le serveur borne a 7
+  const free = await api('/api/stats/overview?days=30', { token });
+  assert.strictEqual(free.status, 200);
+  assert.strictEqual(free.data.plan, 'free');
+  assert.strictEqual(free.data.limitDays, 7);
+  assert.strictEqual(free.data.days, 7);
+  assert.strictEqual(free.data.clamped, true);
+  assert.strictEqual(free.data.focus.length, 7);
+  assert.strictEqual(free.data.tasks.length, 7);
+  assert.strictEqual(free.data.totals.sessions, 1);
+  assert.strictEqual(free.data.totals.focusMinutes, 25);
+  assert.strictEqual(free.data.streak, 1);
+
+  // Tache terminee : comptee dans l'historique
+  const created = await api('/api/tasks', { method: 'POST', token, body: { title: 'A rendre' } });
+  const done = await api(`/api/tasks/${created.data.task.id}`, { method: 'PUT', token, body: { completed: true } });
+  assert.strictEqual(done.status, 200);
+  const withTask = await api('/api/stats/overview', { token });
+  assert.strictEqual(withTask.data.totals.tasksDone, 1);
+
+  // Compte administrataire (ADMIN_EMAILS) : formule Pro sans paiement
+  const adminEmail = 'smoke-admin@test.local';
+  let adminUser;
+  let adminToken;
+  const admin = await api('/api/auth/signup', {
+    method: 'POST',
+    body: { name: 'Admin Test', email: adminEmail, password: 'password123' },
+  });
+  if (admin.status === 201) {
+    adminUser = admin.data.user;
+    adminToken = admin.data.token;
+    ids.push(adminUser.id);
+  } else {
+    // Compte deja cree par un passage precedent : on se connecte
+    const adminLogin = await api('/api/auth/login', {
+      method: 'POST',
+      body: { email: adminEmail, password: 'password123' },
+    });
+    assert.strictEqual(adminLogin.status, 200);
+    adminUser = adminLogin.data.user;
+    adminToken = adminLogin.data.token;
+  }
+  assert.strictEqual(adminUser.plan, 'pro');
+
+  const adminTeams = await api('/api/teams', { token: adminToken });
+  assert.strictEqual(adminTeams.data.plan, 'pro');
+  assert.strictEqual(adminTeams.data.limits.teams, 20);
+
+  const adminStats = await api('/api/stats/overview?days=30', { token: adminToken });
+  assert.strictEqual(adminStats.data.plan, 'pro');
+  assert.strictEqual(adminStats.data.limitDays, 365);
+  assert.strictEqual(adminStats.data.clamped, false);
+  assert.strictEqual(adminStats.data.focus.length, 30);
 });
 
 test('nettoyage des comptes de test', async () => {
