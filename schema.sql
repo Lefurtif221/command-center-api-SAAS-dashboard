@@ -30,6 +30,35 @@ CREATE TABLE IF NOT EXISTS connected_services (
   UNIQUE(user_id, service_name)
 );
 
+CREATE TABLE IF NOT EXISTS teams (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name VARCHAR(255) NOT NULL,
+  owner_id UUID REFERENCES users(id) ON DELETE CASCADE,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS team_members (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  team_id UUID REFERENCES teams(id) ON DELETE CASCADE,
+  user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+  role VARCHAR(20) DEFAULT 'member',
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(team_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS team_invitations (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  team_id UUID REFERENCES teams(id) ON DELETE CASCADE,
+  email VARCHAR(255) NOT NULL,
+  role VARCHAR(20) DEFAULT 'member',
+  invited_by UUID REFERENCES users(id) ON DELETE SET NULL,
+  token VARCHAR(255) UNIQUE NOT NULL,
+  status VARCHAR(20) DEFAULT 'pending',
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS tasks (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID REFERENCES users(id) ON DELETE CASCADE,
@@ -37,9 +66,13 @@ CREATE TABLE IF NOT EXISTS tasks (
   completed BOOLEAN DEFAULT FALSE,
   priority VARCHAR(20) DEFAULT 'medium',
   due_date DATE,
+  team_id UUID REFERENCES teams(id) ON DELETE SET NULL,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+CREATE INDEX IF NOT EXISTS idx_team_members_user ON team_members(user_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_team ON tasks(team_id);
 
 CREATE TABLE IF NOT EXISTS investments (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
