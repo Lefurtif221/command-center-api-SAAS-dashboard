@@ -47,8 +47,18 @@ app.use('/api/tasks', tasksRoutes);
 app.use('/api/calendar', calendarRoutes);
 app.use('/api/whatsapp', whatsappRoutes);
 
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+app.get('/api/health', async (req, res) => {
+  try {
+    await sql`SELECT 1`;
+    res.json({ status: 'ok', db: 'ok', timestamp: new Date().toISOString() });
+  } catch (err) {
+    res.status(503).json({ status: 'degraded', db: 'ko', error: err.message });
+  }
+});
+
+// 404 JSON pour toute route API inconnue
+app.use('/api', (req, res) => {
+  res.status(404).json({ error: 'Route introuvable' });
 });
 
 app.use((err, req, res, next) => {
