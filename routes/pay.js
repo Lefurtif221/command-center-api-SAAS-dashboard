@@ -85,6 +85,7 @@ function splitName(name) {
 
 // Initialisation du paiement : renvoie l'URL du guichet CinetPay
 router.post('/init', auth, async (req, res) => {
+  let merchantTransactionId = null;
   try {
     const client = getClient();
     if (!client) {
@@ -95,7 +96,7 @@ router.post('/init', auth, async (req, res) => {
     const user = await sql`SELECT name, email FROM users WHERE id = ${req.userId}`;
     if (user.length === 0) return res.status(404).json({ error: 'Utilisateur introuvable' });
 
-    const merchantTransactionId = `pp${Date.now()}${Math.random().toString(36).slice(2, 6)}`.slice(0, 30);
+    merchantTransactionId = `pp${Date.now()}${Math.random().toString(36).slice(2, 6)}`.slice(0, 30);
     await sql`
       INSERT INTO subscriptions (user_id, plan, status, provider, provider_tx_id, amount, currency, period_days)
       VALUES (${req.userId}, 'pro', 'pending', 'cinetpay', ${merchantTransactionId},
@@ -134,6 +135,14 @@ router.post('/init', auth, async (req, res) => {
       period_days: offer.periodDays,
     });
   } catch (err) {
+    // Echec de l'init : on ne garde pas d'abonnement fantome en attente
+    if (merchantTransactionId) {
+      try {
+        await sql`DELETE FROM subscriptions WHERE provider_tx_id = ${merchantTransactionId} AND status = 'pending'`;
+      } catch (cleanupErr) {
+        console.error('Pay init cleanup error:', cleanupErr);
+      }
+    }
     if (err instanceof AuthenticationError) {
       return res.status(503).json({ error: 'Identifiants CinetPay invalides', code: 'PAY_NOT_CONFIGURED' });
     }
