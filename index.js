@@ -1,5 +1,6 @@
 require('dotenv').config();
 const express = require('express');
+const Sentry = require('@sentry/node');
 const authRoutes = require('./routes/auth');
 const servicesRoutes = require('./routes/services');
 const tasksRoutes = require('./routes/tasks');
@@ -10,6 +11,17 @@ const sql = require('./db');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+const sentryEnabled = !!process.env.SENTRY_DSN;
+
+if (sentryEnabled) {
+  Sentry.init({
+    dsn: process.env.SENTRY_DSN,
+    environment: process.env.NODE_ENV || 'development',
+    tracesSampleRate: 0.1,
+  });
+  process.on('uncaughtException', (err) => { Sentry.captureException(err); });
+  process.on('unhandledRejection', (err) => { Sentry.captureException(err); });
+}
 
 // Auto-migrate: add phone_number_id column if missing + tables equipe
 (async () => {
@@ -77,6 +89,22 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: '10mb', strict: false }));
 app.use(express.urlencoded({ extended: true }));
 
+// Remonte les erreurs 500 des routes vers Sentry sans toucher a chaque route
+if (sentryEnabled) {
+  app.use((req, res, next) => {
+    const original = res.json.bind(res);
+    res.json = (body) => {
+      if (res.statusCode >= 500 && body && body.error) {
+        Sentry.captureException(new Error(body.error), {
+          extra: { path: req.path, method: req.method, status: res.statusCode },
+        });
+      }
+      return original(body);
+    };
+    next();
+  });
+}
+
 app.use('/api/auth', authRoutes);
 app.use('/api/services', servicesRoutes);
 app.use('/api/tasks', tasksRoutes);
@@ -97,6 +125,10 @@ app.get('/api/health', async (req, res) => {
 app.use('/api', (req, res) => {
   res.status(404).json({ error: 'Route introuvable' });
 });
+
+if (sentryEnabled) {
+  Sentry.setupExpressErrorHandler(app);
+}
 
 app.use((err, req, res, next) => {
   console.error('Server error:', err.message);
