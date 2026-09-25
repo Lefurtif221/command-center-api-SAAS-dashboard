@@ -213,6 +213,105 @@ test('equipes: creation, invitation, acceptation, partage de tache', async () =>
   assert.strictEqual(delTeam.status, 200);
 });
 
+test('gmail: plusieurs comptes distincts, suppression par compte', async () => {
+  const sql = require(path.join(__dirname, '..', 'db'));
+  const email = `smoke-${uniq()}@test.local`;
+  const signup = await api('/api/auth/signup', {
+    method: 'POST',
+    body: { name: 'Mail User', email, password: 'password123' },
+  });
+  ids.push(signup.data.user.id);
+  const token = signup.data.token;
+  const userId = signup.data.user.id;
+
+  const empty = await api('/api/services', { token });
+  assert.strictEqual(empty.status, 200);
+  assert.deepStrictEqual(empty.data.gmailAccounts, []);
+  assert.ok(!empty.data.services.includes('gmail'));
+
+  // Deux comptes Gmail simules (aucun appel a Google dans les tests)
+  await sql`
+    INSERT INTO connected_services (user_id, service_name, access_token, account_key, account_email)
+    VALUES (${userId}, 'gmail', 'tok-a', 'a@x.test', 'a@x.test'),
+           (${userId}, 'gmail', 'tok-b', 'b@x.test', 'b@x.test')
+  `;
+
+  const list = await api('/api/services', { token });
+  assert.strictEqual(list.status, 200);
+  assert.ok(list.data.services.includes('gmail'));
+  assert.strictEqual(list.data.gmailAccounts.length, 2);
+  assert.deepStrictEqual(
+    list.data.gmailAccounts.map(a => a.email).sort(),
+    ['a@x.test', 'b@x.test']
+  );
+
+  const del = await api('/api/services/gmail?account_key=a@x.test', { method: 'DELETE', token });
+  assert.strictEqual(del.status, 200);
+
+  const after = await api('/api/services', { token });
+  assert.strictEqual(after.data.gmailAccounts.length, 1);
+  assert.strictEqual(after.data.gmailAccounts[0].email, 'b@x.test');
+
+  await sql`DELETE FROM connected_services WHERE user_id = ${userId}`;
+});
+
+test('formule gratuite : 1 equipe max, 3 membres max, puis liberations en pro', async () => {
+  const sql = require(path.join(__dirname, '..', 'db'));
+  const ownerEmail = `smoke-plan-${uniq()}@test.local`;
+  const owner = await api('/api/auth/signup', {
+    method: 'POST',
+    body: { name: 'Plan Owner', email: ownerEmail, password: 'password123' },
+  });
+  ids.push(owner.data.user.id);
+  const ownerToken = owner.data.token;
+  const ownerId = owner.data.user.id;
+
+  // Quotas exposes par l'API
+  const list0 = await api('/api/teams', { token: ownerToken });
+  assert.strictEqual(list0.data.plan, 'free');
+  assert.strictEqual(list0.data.limits.teams, 1);
+  assert.strictEqual(list0.data.limits.teamMembers, 3);
+
+  // 1 equipe OK, la 2e est refusee (402)
+  const team1 = await api('/api/teams', { method: 'POST', token: ownerToken, body: { name: 'Equipe Free' } });
+  assert.strictEqual(team1.status, 201);
+  const team2 = await api('/api/teams', { method: 'POST', token: ownerToken, body: { name: 'Trop d equipes' } });
+  assert.strictEqual(team2.status, 402);
+  assert.strictEqual(team2.data.code, 'PLAN_REQUIRED');
+
+  // 2 invitations acceptees (owner + 1) puis 3e bloque : 3 membres max
+  const g1 = `smoke-plan-g1-${uniq()}@test.local`;
+  const g2 = `smoke-plan-g2-${uniq()}@test.local`;
+  const g3 = `smoke-plan-g3-${uniq()}@test.local`;
+  for (const g of [g1, g2, g3]) {
+    const u = await api('/api/auth/signup', { method: 'POST', body: { name: 'Guest', email: g, password: 'password123' } });
+    ids.push(u.data.user.id);
+  }
+
+  const inv1 = await api(`/api/teams/${team1.data.team.id}/invitations`, { method: 'POST', token: ownerToken, body: { email: g1 } });
+  assert.strictEqual(inv1.status, 201);
+  const inv2 = await api(`/api/teams/${team1.data.team.id}/invitations`, { method: 'POST', token: ownerToken, body: { email: g2 } });
+  assert.strictEqual(inv2.status, 201);
+  const inv3 = await api(`/api/teams/${team1.data.team.id}/invitations`, { method: 'POST', token: ownerToken, body: { email: g3 } });
+  assert.strictEqual(inv3.status, 402);
+  assert.strictEqual(inv3.data.code, 'PLAN_REQUIRED');
+
+  // Passage en Pro : tout se deverouille
+  await sql`UPDATE users SET plan = 'pro' WHERE id = ${ownerId}`;
+  const listPro = await api('/api/teams', { token: ownerToken });
+  assert.strictEqual(listPro.data.plan, 'pro');
+  assert.strictEqual(listPro.data.limits.teams, 20);
+
+  const team3 = await api('/api/teams', { method: 'POST', token: ownerToken, body: { name: 'Equipe Pro' } });
+  assert.strictEqual(team3.status, 201);
+  const invPro = await api(`/api/teams/${team1.data.team.id}/invitations`, { method: 'POST', token: ownerToken, body: { email: g3 } });
+  assert.strictEqual(invPro.status, 201);
+
+  await api(`/api/teams/${team1.data.team.id}`, { method: 'DELETE', token: ownerToken });
+  await api(`/api/teams/${team3.data.team.id}`, { method: 'DELETE', token: ownerToken });
+  await sql`UPDATE users SET plan = 'free' WHERE id = ${ownerId}`;
+});
+
 test('nettoyage des comptes de test', async () => {
   const sql = require(path.join(__dirname, '..', 'db'));
   for (const id of ids) {

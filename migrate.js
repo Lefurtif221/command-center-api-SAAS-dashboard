@@ -39,11 +39,13 @@ async function migrate() {
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         user_id UUID REFERENCES users(id) ON DELETE CASCADE,
         service_name VARCHAR(50) NOT NULL,
+        account_key VARCHAR(255) DEFAULT 'default',
+        account_email VARCHAR(255),
         access_token TEXT,
         refresh_token TEXT,
         token_expires_at TIMESTAMPTZ,
         created_at TIMESTAMPTZ DEFAULT NOW(),
-        UNIQUE(user_id, service_name)
+        UNIQUE(user_id, service_name, account_key)
       )
     `;
     console.log('Table connected_services created');

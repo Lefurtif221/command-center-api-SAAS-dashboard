@@ -27,6 +27,31 @@ if (sentryEnabled) {
 (async () => {
   try {
     await sql`ALTER TABLE connected_services ADD COLUMN IF NOT EXISTS phone_number_id VARCHAR(100)`;
+    // Multi-comptes Gmail : une ligne par adresse email
+    await sql`ALTER TABLE connected_services ADD COLUMN IF NOT EXISTS account_key VARCHAR(255)`;
+    await sql`ALTER TABLE connected_services ADD COLUMN IF NOT EXISTS account_email VARCHAR(255)`;
+    await sql`UPDATE connected_services SET account_key = 'default' WHERE account_key IS NULL`;
+    // Drop the old "one row per user+service" unique rule (name differs per DB)
+    const dupConstraints = await sql`
+      SELECT c.conname AS name
+      FROM pg_constraint c
+      WHERE c.contype = 'u'
+        AND c.conrelid = 'connected_services'::regclass
+        AND (SELECT count(*) FROM unnest(c.conkey)) = 2
+        AND EXISTS (SELECT 1 FROM unnest(c.conkey) k
+                    JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k
+                    WHERE a.attname = 'user_id')
+        AND EXISTS (SELECT 1 FROM unnest(c.conkey) k
+                    JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k
+                    WHERE a.attname = 'service_name')
+    `;
+    await sql.query(`ALTER TABLE connected_services DROP CONSTRAINT IF EXISTS "connected_services_user_id_service_name_key"`);
+    for (const c of dupConstraints) {
+      if (typeof c.name === 'string' && /^[A-Za-z0-9_]+$/.test(c.name)) {
+        await sql.query(`ALTER TABLE connected_services DROP CONSTRAINT IF EXISTS "${c.name}"`);
+      }
+    }
+    await sql`CREATE UNIQUE INDEX IF NOT EXISTS connected_services_user_service_account_uq ON connected_services (user_id, service_name, account_key)`;
     await sql`
       CREATE TABLE IF NOT EXISTS teams (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -62,6 +87,26 @@ if (sentryEnabled) {
     await sql`CREATE INDEX IF NOT EXISTS idx_team_members_user ON team_members(user_id)`;
     await sql`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS team_id UUID REFERENCES teams(id) ON DELETE SET NULL`;
     await sql`CREATE INDEX IF NOT EXISTS idx_tasks_team ON tasks(team_id)`;
+    // Abonnements (CinetPay) : une ligne par paiement, la derniere active fait foi
+    await sql`
+      CREATE TABLE IF NOT EXISTS subscriptions (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        plan VARCHAR(20) NOT NULL DEFAULT 'pro',
+        status VARCHAR(20) NOT NULL DEFAULT 'active',
+        provider VARCHAR(30) DEFAULT 'cinetpay',
+        provider_tx_id VARCHAR(255),
+        amount NUMERIC(12, 2),
+        currency VARCHAR(10) DEFAULT 'XOF',
+        period_days INTEGER DEFAULT 31,
+        starts_at TIMESTAMPTZ DEFAULT NOW(),
+        expires_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `;
+    await sql`CREATE INDEX IF NOT EXISTS idx_subscriptions_user ON subscriptions(user_id, status, expires_at DESC)`;
+    await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS plan VARCHAR(20) DEFAULT 'free'`;
     console.log('Migration: schema ensured');
   } catch (err) {
     console.error('Migration error:', err.message);

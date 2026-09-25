@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const { Resend } = require('resend');
 const sql = require('../db');
 const { auth } = require('../middleware/auth');
+const { getPlan } = require('../middleware/plan');
 
 const router = express.Router();
 
@@ -25,6 +26,29 @@ function canManage(role) {
   return role === 'owner' || role === 'admin';
 }
 
+// Membres + invitations en attente (le quota se joue sur les deux)
+async function teamUsage(teamId) {
+  const rows = await sql`
+    SELECT
+      (SELECT COUNT(*)::int FROM team_members WHERE team_id = ${teamId}) AS members,
+      (SELECT COUNT(*)::int FROM team_invitations WHERE team_id = ${teamId} AND status = 'pending') AS invites
+  `;
+  return rows[0].members + rows[0].invites;
+}
+
+// 402 (gratuit) ou 400 (pro) si la formule du proprietaire est saturee
+function fullError(plan, limit) {
+  if (plan === 'pro') return { status: 400, body: { error: `Equipe complete (${limit} membres maximum)` } };
+  return {
+    status: 402,
+    body: {
+      error: `Formule gratuite : ${limit} membres par equipe. Passe en Pro pour inviter plus de monde.`,
+      code: 'PLAN_REQUIRED',
+      plan: 'free',
+    },
+  };
+}
+
 // Creer une equipe
 router.post('/', auth, async (req, res) => {
   try {
@@ -34,8 +58,17 @@ router.post('/', auth, async (req, res) => {
     const existing = await sql`
       SELECT COUNT(*)::int AS count FROM team_members WHERE user_id = ${req.userId}
     `;
-    if (existing[0].count >= 5) {
-      return res.status(400).json({ error: 'Maximum 5 equipes par compte' });
+    const planInfo = await getPlan(req.userId);
+    const maxTeams = planInfo.limits.teams;
+    if (existing[0].count >= maxTeams) {
+      if (planInfo.plan === 'pro') {
+        return res.status(400).json({ error: `Maximum ${maxTeams} equipes par compte` });
+      }
+      return res.status(402).json({
+        error: 'Formule gratuite : 1 seule equipe. Passe en Pro pour en creer davantage.',
+        code: 'PLAN_REQUIRED',
+        plan: 'free',
+      });
     }
 
     const team = await sql`
@@ -66,7 +99,8 @@ router.get('/', auth, async (req, res) => {
       JOIN users o ON o.id = t.owner_id
       ORDER BY t.created_at DESC
     `;
-    res.json({ teams });
+    const planInfo = await getPlan(req.userId);
+    res.json({ teams, plan: planInfo.plan, limits: planInfo.limits });
   } catch (err) {
     console.error('List teams error:', err);
     res.status(500).json({ error: 'Erreur serveur' });
@@ -148,6 +182,15 @@ router.post('/:id/invitations', auth, async (req, res) => {
     const expiresAt = new Date(Date.now() + INVITE_TTL_DAYS * 86400000);
 
     await sql`DELETE FROM team_invitations WHERE team_id = ${req.params.id} AND email = ${email} AND status = 'pending'`;
+
+    // Quota de la formule du proprietaire (membres + invitations en attente)
+    const ownerPlan = await getPlan(membership.owner_id);
+    const used = await teamUsage(req.params.id);
+    if (used >= ownerPlan.limits.teamMembers) {
+      const full = fullError(ownerPlan.plan, ownerPlan.limits.teamMembers);
+      return res.status(full.status).json(full.body);
+    }
+
     await sql`
       INSERT INTO team_invitations (team_id, email, role, invited_by, token, expires_at)
       VALUES (${req.params.id}, ${email}, ${inviteRole}, ${req.userId}, ${token}, ${expiresAt})
@@ -238,6 +281,15 @@ router.post('/invitations/:token/accept', auth, async (req, res) => {
     const me = await sql`SELECT email FROM users WHERE id = ${req.userId}`;
     if (me[0].email.toLowerCase() !== inv.email.toLowerCase()) {
       return res.status(403).json({ error: 'Cette invitation est adressee a ' + inv.email });
+    }
+
+    // L'equipe peut-elle encore accueillir un membre ? (formule du proprietaire)
+    const teamRow = await sql`SELECT owner_id FROM teams WHERE id = ${inv.team_id}`;
+    const ownerPlan = await getPlan(teamRow[0].owner_id);
+    const usage = await sql`SELECT COUNT(*)::int AS count FROM team_members WHERE team_id = ${inv.team_id}`;
+    if (usage[0].count >= ownerPlan.limits.teamMembers) {
+      const full = fullError(ownerPlan.plan, ownerPlan.limits.teamMembers);
+      return res.status(full.status).json(full.body);
     }
 
     await sql`

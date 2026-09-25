@@ -22,12 +22,14 @@ CREATE TABLE IF NOT EXISTS connected_services (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID REFERENCES users(id) ON DELETE CASCADE,
   service_name VARCHAR(50) NOT NULL,
+  account_key VARCHAR(255) DEFAULT 'default',
+  account_email VARCHAR(255),
   access_token TEXT,
   refresh_token TEXT,
   phone_number_id VARCHAR(100),
   token_expires_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ DEFAULT NOW(),
-  UNIQUE(user_id, service_name)
+  UNIQUE(user_id, service_name, account_key)
 );
 
 CREATE TABLE IF NOT EXISTS teams (
@@ -95,3 +97,22 @@ CREATE TABLE IF NOT EXISTS password_reset_tokens (
 );
 
 CREATE INDEX IF NOT EXISTS idx_password_reset_token ON password_reset_tokens(token);
+
+-- Abonnements : une ligne par paiement, la derniere active fait foi
+CREATE TABLE IF NOT EXISTS subscriptions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+  plan VARCHAR(20) NOT NULL DEFAULT 'pro',
+  status VARCHAR(20) NOT NULL DEFAULT 'active',
+  provider VARCHAR(30) DEFAULT 'cinetpay',
+  provider_tx_id VARCHAR(255),
+  amount NUMERIC(12, 2),
+  currency VARCHAR(10) DEFAULT 'XOF',
+  period_days INTEGER DEFAULT 31,
+  starts_at TIMESTAMPTZ DEFAULT NOW(),
+  expires_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_subscriptions_user ON subscriptions(user_id, status, expires_at DESC);
