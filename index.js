@@ -181,10 +181,25 @@ app.use('/api/teams', teamsRoutes);
 app.use('/api/stats', statsRoutes);
 app.use('/api/pay', payRoutes);
 
+// IP publique sortante de ce serveur (a afficher au partenaire a whitelist,
+// ex: CinetPay). Cachee 10 min pour ne pas appeler le service exterieur a chaque requete.
+let egressCache = { ip: null, at: 0 };
+async function egressIp() {
+  if (Date.now() - egressCache.at < 10 * 60 * 1000) return egressCache.ip;
+  try {
+    const res = await fetch('https://api.ipify.org?format=json', { signal: AbortSignal.timeout(5000) });
+    const data = await res.json();
+    egressCache = { ip: data.ip || null, at: Date.now() };
+  } catch {
+    egressCache.at = Date.now();
+  }
+  return egressCache.ip;
+}
+
 app.get('/api/health', async (req, res) => {
   try {
     await sql`SELECT 1`;
-    res.json({ status: 'ok', db: 'ok', timestamp: new Date().toISOString() });
+    res.json({ status: 'ok', db: 'ok', timestamp: new Date().toISOString(), egress: await egressIp() });
   } catch (err) {
     res.status(503).json({ status: 'degraded', db: 'ko', error: err.message });
   }

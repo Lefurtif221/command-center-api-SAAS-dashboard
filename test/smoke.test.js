@@ -390,7 +390,7 @@ test('stats : sessions de focus, historique gratuit 7 jours, compte admin en Pro
   assert.strictEqual(adminStats.data.focus.length, 30);
 });
 
-test('paiement : init sans mot de passe API -> 503, abonnement et webhook vides', async () => {
+test('paiement : init retourne le guichet (ou 503 sans identifiants), abonnement et webhook', async () => {
   const email = `smoke-pay-${uniq()}@test.local`;
   const signup = await api('/api/auth/signup', {
     method: 'POST',
@@ -400,10 +400,19 @@ test('paiement : init sans mot de passe API -> 503, abonnement et webhook vides'
   ids.push(signup.data.user.id);
   const token = signup.data.token;
 
-  // Mot de passe API absent en CI : le paiement est signale comme non configure
   const init = await api('/api/pay/init', { method: 'POST', token, body: { plan: 'pro' } });
-  assert.strictEqual(init.status, 503);
-  assert.strictEqual(init.data.code, 'PAY_NOT_CONFIGURED');
+  if (process.env.CINETPAY_API_KEY && process.env.CINETPAY_API_PASSWORD) {
+    // Identifiants presents : on appelle vraiment CinetPay et on recoit l'URL du guichet
+    assert.strictEqual(init.status, 200);
+    assert.ok(init.data.payment_url, 'payment_url attendu');
+    assert.ok(init.data.transaction_id, 'transaction_id attendu');
+    assert.strictEqual(init.data.amount, 2000);
+    assert.strictEqual(init.data.currency, 'XOF');
+  } else {
+    // Pas de mot de passe API : le paiement est signale comme non configure
+    assert.strictEqual(init.status, 503);
+    assert.strictEqual(init.data.code, 'PAY_NOT_CONFIGURED');
+  }
 
   const sub = await api('/api/pay/subscription', { token });
   assert.strictEqual(sub.status, 200);
