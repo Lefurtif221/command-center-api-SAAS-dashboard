@@ -296,23 +296,32 @@ test('formule gratuite : 1 equipe max, 3 membres max, puis liberations en pro', 
   assert.strictEqual(inv3.status, 402);
   assert.strictEqual(inv3.data.code, 'PLAN_REQUIRED');
 
-  // Passage en Pro : tout se deverouille
+  // Passage en Pro : les quotas montent
   await sql`UPDATE users SET plan = 'pro' WHERE id = ${ownerId}`;
   const listPro = await api('/api/teams', { token: ownerToken });
   assert.strictEqual(listPro.data.plan, 'pro');
-  assert.strictEqual(listPro.data.limits.teams, 20);
+  assert.strictEqual(listPro.data.limits.teams, 7);
+  assert.strictEqual(listPro.data.limits.teamMembers, 10);
 
   const team3 = await api('/api/teams', { method: 'POST', token: ownerToken, body: { name: 'Equipe Pro' } });
   assert.strictEqual(team3.status, 201);
   const invPro = await api(`/api/teams/${team1.data.team.id}/invitations`, { method: 'POST', token: ownerToken, body: { email: g3 } });
   assert.strictEqual(invPro.status, 201);
 
+  // Passage en Entreprise : palier maximal
+  await sql`UPDATE users SET plan = 'entreprise' WHERE id = ${ownerId}`;
+  const listEnt = await api('/api/teams', { token: ownerToken });
+  assert.strictEqual(listEnt.data.plan, 'entreprise');
+  assert.strictEqual(listEnt.data.limits.teams, 20);
+  assert.strictEqual(listEnt.data.limits.teamMembers, 50);
+  assert.strictEqual(listEnt.data.limits.focusDays, 365);
+
   await api(`/api/teams/${team1.data.team.id}`, { method: 'DELETE', token: ownerToken });
   await api(`/api/teams/${team3.data.team.id}`, { method: 'DELETE', token: ownerToken });
   await sql`UPDATE users SET plan = 'free' WHERE id = ${ownerId}`;
 });
 
-test('stats : sessions de focus, historique gratuit 7 jours, compte admin en Pro', async () => {
+test('stats : sessions de focus, historique gratuit 7 jours, compte admin en Entreprise', async () => {
   const email = `smoke-stats-${uniq()}@test.local`;
   const signup = await api('/api/auth/signup', {
     method: 'POST',
@@ -355,7 +364,7 @@ test('stats : sessions de focus, historique gratuit 7 jours, compte admin en Pro
   const withTask = await api('/api/stats/overview', { token });
   assert.strictEqual(withTask.data.totals.tasksDone, 1);
 
-  // Compte administrataire (ADMIN_EMAILS) : formule Pro sans paiement
+  // Compte administrataire (ADMIN_EMAILS) : formule Entreprise sans paiement
   const adminEmail = 'smoke-admin@test.local';
   let adminUser;
   let adminToken;
@@ -377,14 +386,14 @@ test('stats : sessions de focus, historique gratuit 7 jours, compte admin en Pro
     adminUser = adminLogin.data.user;
     adminToken = adminLogin.data.token;
   }
-  assert.strictEqual(adminUser.plan, 'pro');
+  assert.strictEqual(adminUser.plan, 'entreprise');
 
   const adminTeams = await api('/api/teams', { token: adminToken });
-  assert.strictEqual(adminTeams.data.plan, 'pro');
+  assert.strictEqual(adminTeams.data.plan, 'entreprise');
   assert.strictEqual(adminTeams.data.limits.teams, 20);
 
   const adminStats = await api('/api/stats/overview?days=30', { token: adminToken });
-  assert.strictEqual(adminStats.data.plan, 'pro');
+  assert.strictEqual(adminStats.data.plan, 'entreprise');
   assert.strictEqual(adminStats.data.limitDays, 365);
   assert.strictEqual(adminStats.data.clamped, false);
   assert.strictEqual(adminStats.data.focus.length, 30);
@@ -401,15 +410,27 @@ test('paiement : init retourne le guichet (ou 503 sans identifiants), abonnement
   const token = signup.data.token;
 
   const init = await api('/api/pay/init', { method: 'POST', token, body: { plan: 'pro' } });
-  if (process.env.CINETPAY_API_KEY && process.env.CINETPAY_API_PASSWORD) {
-    // Identifiants presents : on appelle vraiment CinetPay et on recoit l'URL du guichet
-    assert.strictEqual(init.status, 200);
+  if (init.status === 200) {
+    // Identifiants valides et IP whitelistee : on recoit l'URL du guichet
     assert.ok(init.data.payment_url, 'payment_url attendu');
     assert.ok(init.data.transaction_id, 'transaction_id attendu');
     assert.strictEqual(init.data.amount, 2000);
     assert.strictEqual(init.data.currency, 'XOF');
+    assert.strictEqual(init.data.plan, 'pro');
+
+    // Palier Entreprise : tarif unique 7500 FCFA
+    const ent = await api('/api/pay/init', { method: 'POST', token, body: { plan: 'entreprise' } });
+    assert.strictEqual(ent.status, 200);
+    assert.strictEqual(ent.data.amount, 7500);
+    assert.strictEqual(ent.data.plan, 'entreprise');
+    assert.strictEqual(ent.data.currency, 'XOF');
+
+    // Formule inconnue refusee
+    const bad = await api('/api/pay/init', { method: 'POST', token, body: { plan: 'inconnu' } });
+    assert.strictEqual(bad.status, 400);
+    assert.strictEqual(bad.data.code, 'OFFER_UNKNOWN');
   } else {
-    // Pas de mot de passe API : le paiement est signale comme non configure
+    // Pas de credentiels, ou IP de l environnement non whitelistee chez CinetPay
     assert.strictEqual(init.status, 503);
     assert.strictEqual(init.data.code, 'PAY_NOT_CONFIGURED');
   }
@@ -426,7 +447,7 @@ test('paiement : init retourne le guichet (ou 503 sans identifiants), abonnement
   const notify = await api('/api/pay/notify', { method: 'POST', body: {} });
   assert.strictEqual(notify.status, 200);
 
-  if (process.env.CINETPAY_API_KEY && process.env.CINETPAY_API_PASSWORD) {
+  if (init.status === 200) {
     // Deuxieme mois : l utilisateur a deja un abonnement actif -> tarif mensuel 2500
     const sql = require(path.join(__dirname, '..', 'db'));
     await sql`

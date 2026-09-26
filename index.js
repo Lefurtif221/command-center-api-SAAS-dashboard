@@ -125,9 +125,9 @@ if (sentryEnabled) {
       )
     `;
     await sql`CREATE INDEX IF NOT EXISTS idx_focus_sessions_user_date ON focus_sessions(user_id, started_at DESC)`;
-    // Comptes proprietaire : Pro permanent
+    // Comptes proprietaire : formule Entreprise permanente
     for (const email of ADMIN_EMAILS) {
-      await sql`UPDATE users SET plan = 'pro' WHERE lower(email) = ${email}`;
+      await sql`UPDATE users SET plan = 'entreprise' WHERE lower(email) = ${email}`;
     }
     console.log('Migration: schema ensured');
   } catch (err) {

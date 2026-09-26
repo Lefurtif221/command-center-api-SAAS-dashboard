@@ -10,11 +10,15 @@ const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
 const API_URL = process.env.API_URL || 'http://localhost:3001';
 const COUNTRY = (process.env.CINETPAY_COUNTRY || 'SN').toUpperCase();
 
-// Offres Pro : 2000 FCFA le premier mois, puis 2500 FCFA par mois (31 jours)
+// Offres : Pro 2000 FCFA le premier mois puis 2500 FCFA/mois, Entreprise 7500 FCFA/mois (31 jours)
 const OFFERS = {
-  firstMonth: { amount: 2000, currency: 'XOF', periodDays: 31, designation: 'Formule Pro - premier mois 2000 FCFA' },
-  renewal: { amount: 2500, currency: 'XOF', periodDays: 31, designation: 'Formule Pro - mensuel 2500 FCFA' },
+  firstMonth: { plan: 'pro', amount: 2000, currency: 'XOF', periodDays: 31, designation: 'Formule Pro - premier mois 2000 FCFA' },
+  renewal: { plan: 'pro', amount: 2500, currency: 'XOF', periodDays: 31, designation: 'Formule Pro - mensuel 2500 FCFA' },
+  entreprise: { plan: 'entreprise', amount: 7500, currency: 'XOF', periodDays: 31, designation: 'Formule Entreprise - mensuel 7500 FCFA' },
 };
+
+// Formule demandee par le client (le prix reste defini uniquement ici)
+const PAID_PLANS = new Set(['pro', 'entreprise']);
 
 // Un client par paire de credentials (le SDK cache le token JWT)
 let cachedClient = null;
@@ -51,7 +55,7 @@ async function checkStatus(identifier) {
 // Active l'abonnement uniquement si CinetPay confirme le paiement
 async function activateIfPaid(merchantTransactionId) {
   const rows = await sql`
-    SELECT id, user_id, status, period_days, provider_ref
+    SELECT id, user_id, plan, status, period_days, provider_ref
     FROM subscriptions
     WHERE provider_tx_id = ${merchantTransactionId}
     LIMIT 1
@@ -70,7 +74,8 @@ async function activateIfPaid(merchantTransactionId) {
     SET status = 'active', expires_at = ${expiresAt}, updated_at = NOW()
     WHERE id = ${sub.id}
   `;
-  await sql`UPDATE users SET plan = 'pro', updated_at = NOW() WHERE id = ${sub.user_id}`;
+  const subPlan = PAID_PLANS.has(sub.plan) ? sub.plan : 'pro';
+  await sql`UPDATE users SET plan = ${subPlan}, updated_at = NOW() WHERE id = ${sub.user_id}`;
   return { ...sub, status: 'active', expires_at: expiresAt };
 }
 
@@ -96,17 +101,24 @@ router.post('/init', auth, async (req, res) => {
     const user = await sql`SELECT name, email FROM users WHERE id = ${req.userId}`;
     if (user.length === 0) return res.status(404).json({ error: 'Utilisateur introuvable' });
 
-    // Premier abonnement -> tarif d'introduction, sinon tarif mensuel
+    const requested = String((req.body && req.body.plan) || 'pro').toLowerCase();
+    if (!PAID_PLANS.has(requested)) {
+      return res.status(400).json({ error: 'Formule inconnue', code: 'OFFER_UNKNOWN' });
+    }
+
+    // Premiere souscription Pro -> tarif d'introduction, sinon tarif mensuel
     const alreadyPaid = await sql`
       SELECT 1 FROM subscriptions WHERE user_id = ${req.userId} AND status = 'active' LIMIT 1
     `;
     const isFirstMonth = alreadyPaid.length === 0;
-    const offer = isFirstMonth ? OFFERS.firstMonth : OFFERS.renewal;
+    const offer = requested === 'entreprise'
+      ? OFFERS.entreprise
+      : isFirstMonth ? OFFERS.firstMonth : OFFERS.renewal;
 
     merchantTransactionId = `pp${Date.now()}${Math.random().toString(36).slice(2, 6)}`.slice(0, 30);
     await sql`
       INSERT INTO subscriptions (user_id, plan, status, provider, provider_tx_id, amount, currency, period_days)
-      VALUES (${req.userId}, 'pro', 'pending', 'cinetpay', ${merchantTransactionId},
+      VALUES (${req.userId}, ${offer.plan}, 'pending', 'cinetpay', ${merchantTransactionId},
               ${offer.amount}, ${offer.currency}, ${offer.periodDays})
     `;
 
@@ -137,6 +149,7 @@ router.post('/init', auth, async (req, res) => {
     res.json({
       payment_url: payment.paymentUrl,
       transaction_id: merchantTransactionId,
+      plan: offer.plan,
       amount: offer.amount,
       currency: offer.currency,
       period_days: offer.periodDays,
@@ -189,7 +202,7 @@ router.get('/status', auth, async (req, res) => {
     if (!transactionId) return res.status(400).json({ error: 'transaction_id requis' });
 
     const rows = await sql`
-      SELECT id, status, expires_at, amount, currency
+      SELECT id, status, plan, expires_at, amount, currency
       FROM subscriptions
       WHERE provider_tx_id = ${transactionId} AND user_id = ${req.userId}
       LIMIT 1
@@ -198,11 +211,11 @@ router.get('/status', auth, async (req, res) => {
 
     if (rows[0].status !== 'active') await activateIfPaid(transactionId);
 
-    const fresh = await sql`SELECT status, expires_at FROM subscriptions WHERE id = ${rows[0].id}`;
+    const fresh = await sql`SELECT status, plan, expires_at FROM subscriptions WHERE id = ${rows[0].id}`;
     res.json({
       status: fresh[0].status,
       expires_at: fresh[0].expires_at,
-      plan: fresh[0].status === 'active' ? 'pro' : 'free',
+      plan: fresh[0].status === 'active' && PAID_PLANS.has(fresh[0].plan) ? fresh[0].plan : 'free',
     });
   } catch (err) {
     console.error('Pay status error:', err);
@@ -215,7 +228,7 @@ router.get('/subscription', auth, async (req, res) => {
   try {
     const info = await getPlan(req.userId);
     const rows = await sql`
-      SELECT amount, currency, status, expires_at, provider_tx_id, period_days
+      SELECT amount, currency, plan, status, expires_at, provider_tx_id, period_days
       FROM subscriptions
       WHERE user_id = ${req.userId} AND status = 'active'
       ORDER BY expires_at DESC NULLS LAST

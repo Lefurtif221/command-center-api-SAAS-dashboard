@@ -36,9 +36,19 @@ async function teamUsage(teamId) {
   return rows[0].members + rows[0].invites;
 }
 
-// 402 (gratuit) ou 400 (pro) si la formule du proprietaire est saturee
+// 402 (gratuit) ou 400 (formule payante) si la formule du proprietaire est saturee
 function fullError(plan, limit) {
-  if (plan === 'pro') return { status: 400, body: { error: `Equipe complete (${limit} membres maximum)` } };
+  if (plan === 'entreprise') return { status: 400, body: { error: `Equipe complete (${limit} membres maximum)` } };
+  if (plan === 'pro') {
+    return {
+      status: 400,
+      body: {
+        error: `Formule Pro : ${limit} membres par equipe maximum. Passe en Entreprise pour inviter plus de monde.`,
+        code: 'PLAN_REQUIRED',
+        plan: 'pro',
+      },
+    };
+  }
   return {
     status: 402,
     body: {
@@ -61,8 +71,15 @@ router.post('/', auth, async (req, res) => {
     const planInfo = await getPlan(req.userId);
     const maxTeams = planInfo.limits.teams;
     if (existing[0].count >= maxTeams) {
-      if (planInfo.plan === 'pro') {
+      if (planInfo.plan === 'entreprise') {
         return res.status(400).json({ error: `Maximum ${maxTeams} equipes par compte` });
+      }
+      if (planInfo.plan === 'pro') {
+        return res.status(400).json({
+          error: `Formule Pro : ${maxTeams} equipes maximum. Passe en Entreprise pour en creer davantage.`,
+          code: 'PLAN_REQUIRED',
+          plan: 'pro',
+        });
       }
       return res.status(402).json({
         error: 'Formule gratuite : 1 seule equipe. Passe en Pro pour en creer davantage.',
