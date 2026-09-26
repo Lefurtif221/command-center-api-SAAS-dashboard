@@ -8,7 +8,7 @@ const router = express.Router();
 router.get('/', auth, async (req, res) => {
   try {
     const tasks = await sql`
-      SELECT t.id, t.title, t.completed, t.priority, t.due_date, t.created_at, t.updated_at,
+      SELECT t.id, t.title, t.completed, t.completed_at, t.priority, t.due_date, t.created_at, t.updated_at,
              t.team_id, tm.name AS team_name,
              CASE WHEN t.user_id = ${req.userId} THEN true ELSE false END AS is_owner,
              owner.name AS shared_by
@@ -42,7 +42,7 @@ router.post('/', auth, async (req, res) => {
     const result = await sql`
       INSERT INTO tasks (user_id, title, priority, due_date, team_id)
       VALUES (${req.userId}, ${title}, ${priority || 'medium'}, ${due_date || null}, ${team_id || null})
-      RETURNING id, title, completed, priority, due_date, created_at, team_id
+      RETURNING id, title, completed, completed_at, priority, due_date, created_at, team_id
     `;
     res.status(201).json({ task: result[0] });
   } catch (err) {
@@ -69,7 +69,7 @@ router.put('/:id', auth, async (req, res) => {
           user_id = ${req.userId}
           OR team_id IN (SELECT team_id FROM team_members WHERE user_id = ${req.userId})
         )
-      RETURNING id, title, completed, priority, due_date, created_at, updated_at, team_id
+      RETURNING id, title, completed, completed_at, priority, due_date, created_at, updated_at, team_id
     `;
     if (result.length === 0) return res.status(404).json({ error: 'Tâche non trouvée' });
 
