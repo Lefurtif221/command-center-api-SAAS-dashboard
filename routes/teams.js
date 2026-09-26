@@ -385,4 +385,163 @@ router.delete('/:id', auth, async (req, res) => {
   }
 });
 
+// ---------- Discussion de l'equipe (chat interne) ----------
+const MAX_MESSAGE_LEN = 2000;
+
+router.get('/:id/messages', auth, async (req, res) => {
+  try {
+    const membership = await getMembership(req.params.id, req.userId);
+    if (!membership) return res.status(404).json({ error: 'Équipe introuvable' });
+
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 100);
+    const rows = await sql`
+      SELECT m.id, m.content, m.created_at, m.sender_id, u.name, u.initials
+      FROM team_messages m
+      JOIN users u ON u.id = m.sender_id
+      WHERE m.team_id = ${req.params.id}
+      ORDER BY m.created_at DESC
+      LIMIT ${limit}
+    `;
+    res.json({ messages: rows.reverse() });
+  } catch (err) {
+    console.error('Get messages error:', err);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+router.post('/:id/messages', auth, async (req, res) => {
+  try {
+    const membership = await getMembership(req.params.id, req.userId);
+    if (!membership) return res.status(404).json({ error: 'Équipe introuvable' });
+
+    const content = String(req.body.content || '').trim();
+    if (!content) return res.status(400).json({ error: 'Message vide' });
+    if (content.length > MAX_MESSAGE_LEN) {
+      return res.status(400).json({ error: `Message trop long (${MAX_MESSAGE_LEN} caractères max)` });
+    }
+
+    const inserted = await sql`
+      INSERT INTO team_messages (team_id, sender_id, content)
+      VALUES (${req.params.id}, ${req.userId}, ${content})
+      RETURNING id, content, created_at
+    `;
+    const sender = await sql`SELECT name, initials FROM users WHERE id = ${req.userId}`;
+    res.status(201).json({
+      message: {
+        ...inserted[0],
+        sender_id: req.userId,
+        name: sender[0]?.name || '',
+        initials: sender[0]?.initials || null,
+      },
+    });
+  } catch (err) {
+    console.error('Post message error:', err);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// ---------- Emploi du temps partage (edite par l'admin) ----------
+const SCHEDULE_COLORS = ['blue', 'green', 'amber', 'violet', 'rose', 'gray'];
+const WEEK_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function parseScheduleBody(body) {
+  const day = Number(body.day);
+  const start = Number(body.start_minute);
+  const end = Number(body.end_minute);
+  const label = String(body.label || '').trim();
+  const color = SCHEDULE_COLORS.includes(body.color) ? body.color : 'blue';
+  if (!Number.isInteger(day) || day < 0 || day > 6) return { error: 'Jour invalide' };
+  if (!Number.isInteger(start) || start < 0 || start > 1439) return { error: 'Heure de début invalide' };
+  if (!Number.isInteger(end) || end <= start || end > 1440) return { error: 'Heure de fin invalide' };
+  if (!label) return { error: 'Titre manquant' };
+  if (label.length > 120) return { error: 'Titre trop long (120 caractères max)' };
+  return { day, start, end, label, color };
+}
+
+router.get('/:id/schedule', auth, async (req, res) => {
+  try {
+    const membership = await getMembership(req.params.id, req.userId);
+    if (!membership) return res.status(404).json({ error: 'Équipe introuvable' });
+    const week = String(req.query.week || '');
+    if (!WEEK_RE.test(week)) return res.status(400).json({ error: 'Semaine invalide' });
+
+    const entries = await sql`
+      SELECT id, day_of_week, start_minute, end_minute, label, color, created_by, week_date
+      FROM team_schedule_entries
+      WHERE team_id = ${req.params.id} AND week_date = ${week}
+      ORDER BY day_of_week, start_minute
+    `;
+    res.json({ entries, canManage: canManage(membership.role) });
+  } catch (err) {
+    console.error('Get schedule error:', err);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+router.post('/:id/schedule', auth, async (req, res) => {
+  try {
+    const membership = await getMembership(req.params.id, req.userId);
+    if (!membership) return res.status(404).json({ error: 'Équipe introuvable' });
+    if (!canManage(membership.role)) return res.status(403).json({ error: 'Action réservée aux administrateurs' });
+
+    const week = String(req.body.week || '');
+    if (!WEEK_RE.test(week)) return res.status(400).json({ error: 'Semaine invalide' });
+    const parsed = parseScheduleBody(req.body);
+    if (parsed.error) return res.status(400).json({ error: parsed.error });
+
+    const rows = await sql`
+      INSERT INTO team_schedule_entries (team_id, created_by, week_date, day_of_week, start_minute, end_minute, label, color)
+      VALUES (${req.params.id}, ${req.userId}, ${week}, ${parsed.day}, ${parsed.start}, ${parsed.end}, ${parsed.label}, ${parsed.color})
+      RETURNING id, day_of_week, start_minute, end_minute, label, color, created_by, week_date
+    `;
+    res.status(201).json({ entry: rows[0] });
+  } catch (err) {
+    console.error('Create schedule entry error:', err);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+router.put('/:id/schedule/:entryId', auth, async (req, res) => {
+  try {
+    const membership = await getMembership(req.params.id, req.userId);
+    if (!membership) return res.status(404).json({ error: 'Équipe introuvable' });
+    if (!canManage(membership.role)) return res.status(403).json({ error: 'Action réservée aux administrateurs' });
+
+    const parsed = parseScheduleBody(req.body);
+    if (parsed.error) return res.status(400).json({ error: parsed.error });
+
+    const rows = await sql`
+      UPDATE team_schedule_entries
+      SET day_of_week = ${parsed.day}, start_minute = ${parsed.start}, end_minute = ${parsed.end},
+          label = ${parsed.label}, color = ${parsed.color}
+      WHERE id = ${req.params.entryId} AND team_id = ${req.params.id}
+      RETURNING id, day_of_week, start_minute, end_minute, label, color, created_by, week_date
+    `;
+    if (rows.length === 0) return res.status(404).json({ error: 'Bloc introuvable' });
+    res.json({ entry: rows[0] });
+  } catch (err) {
+    console.error('Update schedule entry error:', err);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+router.delete('/:id/schedule/:entryId', auth, async (req, res) => {
+  try {
+    const membership = await getMembership(req.params.id, req.userId);
+    if (!membership) return res.status(404).json({ error: 'Équipe introuvable' });
+    if (!canManage(membership.role)) return res.status(403).json({ error: 'Action réservée aux administrateurs' });
+
+    const rows = await sql`
+      DELETE FROM team_schedule_entries
+      WHERE id = ${req.params.entryId} AND team_id = ${req.params.id}
+      RETURNING id
+    `;
+    if (rows.length === 0) return res.status(404).json({ error: 'Bloc introuvable' });
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Delete schedule entry error:', err);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
 module.exports = router;

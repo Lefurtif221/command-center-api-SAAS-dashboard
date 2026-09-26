@@ -125,6 +125,33 @@ if (sentryEnabled) {
       )
     `;
     await sql`CREATE INDEX IF NOT EXISTS idx_focus_sessions_user_date ON focus_sessions(user_id, started_at DESC)`;
+    // Discussion de l'equipe (chat interne)
+    await sql`
+      CREATE TABLE IF NOT EXISTS team_messages (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        team_id UUID REFERENCES teams(id) ON DELETE CASCADE,
+        sender_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        content TEXT NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `;
+    await sql`CREATE INDEX IF NOT EXISTS idx_team_messages_team ON team_messages(team_id, created_at)`;
+    // Emploi du temps partage : blocs d'une semaine, edites par l'admin de l'equipe
+    await sql`
+      CREATE TABLE IF NOT EXISTS team_schedule_entries (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        team_id UUID REFERENCES teams(id) ON DELETE CASCADE,
+        created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+        week_date DATE NOT NULL,
+        day_of_week INTEGER NOT NULL,
+        start_minute INTEGER NOT NULL,
+        end_minute INTEGER NOT NULL,
+        label VARCHAR(120) NOT NULL,
+        color VARCHAR(20) DEFAULT 'blue',
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `;
+    await sql`CREATE INDEX IF NOT EXISTS idx_team_schedule_team ON team_schedule_entries(team_id, week_date, day_of_week)`;
     // Comptes proprietaire : formule Entreprise permanente
     for (const email of ADMIN_EMAILS) {
       await sql`UPDATE users SET plan = 'entreprise' WHERE lower(email) = ${email}`;

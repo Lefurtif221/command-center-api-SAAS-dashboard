@@ -209,6 +209,55 @@ test('equipes: creation, invitation, acceptation, partage de tache', async () =>
   });
   assert.strictEqual(blocked.status, 403);
 
+  // Chat de l'equipe : le membre ecrit, l'exterieur est bloque
+  const postMsg = await api(`/api/teams/${teamId}/messages`, {
+    method: 'POST',
+    token: guestToken,
+    body: { content: 'Bonjour tout le monde' },
+  });
+  assert.strictEqual(postMsg.status, 201);
+  const getMsgs = await api(`/api/teams/${teamId}/messages`, { token: ownerToken });
+  assert.strictEqual(getMsgs.status, 200);
+  assert.strictEqual(getMsgs.data.messages.length, 1);
+  assert.strictEqual(getMsgs.data.messages[0].content, 'Bonjour tout le monde');
+  const msgOutsider = await api(`/api/teams/${teamId}/messages`, {
+    method: 'POST',
+    token: outsider.data.token,
+    body: { content: 'Intrus' },
+  });
+  assert.strictEqual(msgOutsider.status, 404);
+
+  // Emploi du temps : seul l'admin ecrit, le membre consulte
+  const week = '2026-09-21';
+  const schedByMember = await api(`/api/teams/${teamId}/schedule`, {
+    method: 'POST',
+    token: guestToken,
+    body: { week, day: 0, start_minute: 540, end_minute: 600, label: 'Standup' },
+  });
+  assert.strictEqual(schedByMember.status, 403);
+  const sched = await api(`/api/teams/${teamId}/schedule`, {
+    method: 'POST',
+    token: ownerToken,
+    body: { week, day: 0, start_minute: 540, end_minute: 600, label: 'Standup', color: 'green' },
+  });
+  assert.strictEqual(sched.status, 201);
+  const getSched = await api(`/api/teams/${teamId}/schedule?week=${week}`, { token: guestToken });
+  assert.strictEqual(getSched.status, 200);
+  assert.strictEqual(getSched.data.entries.length, 1);
+  assert.strictEqual(getSched.data.entries[0].label, 'Standup');
+  const updSched = await api(`/api/teams/${teamId}/schedule/${sched.data.entry.id}`, {
+    method: 'PUT',
+    token: ownerToken,
+    body: { week, day: 2, start_minute: 600, end_minute: 660, label: 'Point hebdo', color: 'violet' },
+  });
+  assert.strictEqual(updSched.status, 200);
+  assert.strictEqual(updSched.data.entry.label, 'Point hebdo');
+  const delSched = await api(`/api/teams/${teamId}/schedule/${sched.data.entry.id}`, {
+    method: 'DELETE',
+    token: ownerToken,
+  });
+  assert.strictEqual(delSched.status, 200);
+
   const delTeam = await api(`/api/teams/${teamId}`, { method: 'DELETE', token: ownerToken });
   assert.strictEqual(delTeam.status, 200);
 });
