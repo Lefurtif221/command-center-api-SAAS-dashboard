@@ -38,12 +38,12 @@ async function teamUsage(teamId) {
 
 // 402 (gratuit) ou 400 (formule payante) si la formule du proprietaire est saturee
 function fullError(plan, limit) {
-  if (plan === 'entreprise') return { status: 400, body: { error: `Equipe complete (${limit} membres maximum)` } };
+  if (plan === 'entreprise') return { status: 400, body: { error: `Équipe complète (${limit} membres maximum)` } };
   if (plan === 'pro') {
     return {
       status: 400,
       body: {
-        error: `Formule Pro : ${limit} membres par equipe maximum. Passe en Entreprise pour inviter plus de monde.`,
+        error: `Formule Pro : ${limit} membres par équipe maximum. Passe en Entreprise pour inviter plus de monde.`,
         code: 'PLAN_REQUIRED',
         plan: 'pro',
       },
@@ -52,7 +52,7 @@ function fullError(plan, limit) {
   return {
     status: 402,
     body: {
-      error: `Formule gratuite : ${limit} membres par equipe. Passe en Pro pour inviter plus de monde.`,
+      error: `Formule gratuite : ${limit} membres par équipe. Passe en Pro pour inviter plus de monde.`,
       code: 'PLAN_REQUIRED',
       plan: 'free',
     },
@@ -72,17 +72,17 @@ router.post('/', auth, async (req, res) => {
     const maxTeams = planInfo.limits.teams;
     if (existing[0].count >= maxTeams) {
       if (planInfo.plan === 'entreprise') {
-        return res.status(400).json({ error: `Maximum ${maxTeams} equipes par compte` });
+        return res.status(400).json({ error: `Maximum ${maxTeams} équipes par compte` });
       }
       if (planInfo.plan === 'pro') {
         return res.status(400).json({
-          error: `Formule Pro : ${maxTeams} equipes maximum. Passe en Entreprise pour en creer davantage.`,
+          error: `Formule Pro : ${maxTeams} équipes maximum. Passe en Entreprise pour en créer davantage.`,
           code: 'PLAN_REQUIRED',
           plan: 'pro',
         });
       }
       return res.status(402).json({
-        error: 'Formule gratuite : 1 seule equipe. Passe en Pro pour en creer davantage.',
+        error: 'Formule gratuite : 1 seule équipe. Passe en Pro pour en créer davantage.',
         code: 'PLAN_REQUIRED',
         plan: 'free',
       });
@@ -128,7 +128,7 @@ router.get('/', auth, async (req, res) => {
 router.get('/:id', auth, async (req, res) => {
   try {
     const membership = await getMembership(req.params.id, req.userId);
-    if (!membership) return res.status(404).json({ error: 'Equipe introuvable' });
+    if (!membership) return res.status(404).json({ error: 'Équipe introuvable' });
 
     const members = await sql`
       SELECT tm.user_id, tm.role, u.name, u.email, u.initials, u.avatar_url
@@ -159,8 +159,8 @@ router.get('/:id', auth, async (req, res) => {
 router.put('/:id', auth, async (req, res) => {
   try {
     const membership = await getMembership(req.params.id, req.userId);
-    if (!membership) return res.status(404).json({ error: 'Equipe introuvable' });
-    if (!canManage(membership.role)) return res.status(403).json({ error: 'Action reservee aux administrateurs' });
+    if (!membership) return res.status(404).json({ error: 'Équipe introuvable' });
+    if (!canManage(membership.role)) return res.status(403).json({ error: 'Action réservée aux administrateurs' });
 
     const { name } = req.body;
     if (!name || !name.trim()) return res.status(400).json({ error: 'Nom requis' });
@@ -180,8 +180,8 @@ router.put('/:id', auth, async (req, res) => {
 router.post('/:id/invitations', auth, async (req, res) => {
   try {
     const membership = await getMembership(req.params.id, req.userId);
-    if (!membership) return res.status(404).json({ error: 'Equipe introuvable' });
-    if (!canManage(membership.role)) return res.status(403).json({ error: 'Action reservee aux administrateurs' });
+    if (!membership) return res.status(404).json({ error: 'Équipe introuvable' });
+    if (!canManage(membership.role)) return res.status(403).json({ error: 'Action réservée aux administrateurs' });
 
     const { email, role } = req.body;
     if (!email || !email.includes('@')) return res.status(400).json({ error: 'Email invalide' });
@@ -192,7 +192,7 @@ router.post('/:id/invitations', auth, async (req, res) => {
       const already = await sql`
         SELECT id FROM team_members WHERE team_id = ${req.params.id} AND user_id = ${target[0].id}
       `;
-      if (already.length > 0) return res.status(409).json({ error: 'Cet utilisateur est deja dans l\'equipe' });
+      if (already.length > 0) return res.status(409).json({ error: 'Cet utilisateur est déjà dans l\'équipe' });
     }
 
     const token = crypto.randomBytes(24).toString('hex');
@@ -221,13 +221,13 @@ router.post('/:id/invitations', auth, async (req, res) => {
         await resend.emails.send({
           from: 'Personal Place <onboarding@resend.dev>',
           to: email,
-          subject: `${inviter[0]?.name || 'Quelqu un'} vous invite a rejoindre "${membership.name}"`,
+          subject: `${inviter[0]?.name || 'Quelqu un'} vous invite à rejoindre "${membership.name}"`,
           html: `
             <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto; padding: 32px;">
-              <h2 style="color:#0b0f14;margin-bottom:16px;">Invitation a l'equipe ${membership.name}</h2>
+              <h2 style="color:#0b0f14;margin-bottom:16px;">Invitation à l'équipe ${membership.name}</h2>
               <p style="color:#666;font-size:14px;line-height:1.6;">
-                ${inviter[0]?.name || 'Quelqu un'} vous invite a rejoindre son espace sur Personal Place.
-                Creez un compte ou connectez-vous avec cet email pour accepter.
+                ${inviter[0]?.name || 'Quelqu un'} vous invite à rejoindre son espace sur Personal Place.
+                Créez un compte ou connectez-vous avec cet email pour accepter.
               </p>
               <a href="${inviteUrl}" style="display:inline-block;background:#2563EB;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600;font-size:14px;margin:16px 0;">
                 Accepter l'invitation
@@ -252,8 +252,8 @@ router.post('/:id/invitations', auth, async (req, res) => {
 router.delete('/:id/invitations/:invId', auth, async (req, res) => {
   try {
     const membership = await getMembership(req.params.id, req.userId);
-    if (!membership) return res.status(404).json({ error: 'Equipe introuvable' });
-    if (!canManage(membership.role)) return res.status(403).json({ error: 'Action reservee aux administrateurs' });
+    if (!membership) return res.status(404).json({ error: 'Équipe introuvable' });
+    if (!canManage(membership.role)) return res.status(403).json({ error: 'Action réservée aux administrateurs' });
 
     await sql`DELETE FROM team_invitations WHERE id = ${req.params.invId} AND team_id = ${req.params.id}`;
     res.json({ success: true });
@@ -274,7 +274,7 @@ router.get('/invitations/:token', auth, async (req, res) => {
     if (rows.length === 0) return res.status(404).json({ error: 'Invitation introuvable' });
     const inv = rows[0];
     if (inv.status !== 'pending') return res.status(400).json({ error: 'Cette invitation n\'est plus valide' });
-    if (new Date(inv.expires_at) < new Date()) return res.status(400).json({ error: 'Invitation expiree' });
+    if (new Date(inv.expires_at) < new Date()) return res.status(400).json({ error: 'Invitation expirée' });
     res.json({ invitation: inv });
   } catch (err) {
     console.error('Get invite error:', err);
@@ -293,11 +293,11 @@ router.post('/invitations/:token/accept', auth, async (req, res) => {
     if (rows.length === 0) return res.status(404).json({ error: 'Invitation introuvable' });
     const inv = rows[0];
     if (inv.status !== 'pending') return res.status(400).json({ error: 'Cette invitation n\'est plus valide' });
-    if (new Date(inv.expires_at) < new Date()) return res.status(400).json({ error: 'Invitation expiree' });
+    if (new Date(inv.expires_at) < new Date()) return res.status(400).json({ error: 'Invitation expirée' });
 
     const me = await sql`SELECT email FROM users WHERE id = ${req.userId}`;
     if (me[0].email.toLowerCase() !== inv.email.toLowerCase()) {
-      return res.status(403).json({ error: 'Cette invitation est adressee a ' + inv.email });
+      return res.status(403).json({ error: 'Cette invitation est adressée à ' + inv.email });
     }
 
     // L'equipe peut-elle encore accueillir un membre ? (formule du proprietaire)
@@ -327,7 +327,7 @@ router.post('/invitations/:token/accept', auth, async (req, res) => {
 router.put('/:id/members/:userId', auth, async (req, res) => {
   try {
     const membership = await getMembership(req.params.id, req.userId);
-    if (!membership) return res.status(404).json({ error: 'Equipe introuvable' });
+    if (!membership) return res.status(404).json({ error: 'Équipe introuvable' });
     if (membership.role !== 'owner') return res.status(403).json({ error: 'Seul le proprietaire peut changer les roles' });
 
     const { role } = req.body;
@@ -351,11 +351,11 @@ router.put('/:id/members/:userId', auth, async (req, res) => {
 router.delete('/:id/members/:userId', auth, async (req, res) => {
   try {
     const membership = await getMembership(req.params.id, req.userId);
-    if (!membership) return res.status(404).json({ error: 'Equipe introuvable' });
+    if (!membership) return res.status(404).json({ error: 'Équipe introuvable' });
 
     const isSelf = req.params.userId === req.userId;
     if (!isSelf && !canManage(membership.role)) {
-      return res.status(403).json({ error: 'Action reservee aux administrateurs' });
+      return res.status(403).json({ error: 'Action réservée aux administrateurs' });
     }
     if (req.params.userId === membership.owner_id) {
       return res.status(400).json({ error: 'Impossible de retirer le proprietaire' });
@@ -373,8 +373,8 @@ router.delete('/:id/members/:userId', auth, async (req, res) => {
 router.delete('/:id', auth, async (req, res) => {
   try {
     const membership = await getMembership(req.params.id, req.userId);
-    if (!membership) return res.status(404).json({ error: 'Equipe introuvable' });
-    if (membership.owner_id !== req.userId) return res.status(403).json({ error: 'Seul le proprietaire peut supprimer l\'equipe' });
+    if (!membership) return res.status(404).json({ error: 'Équipe introuvable' });
+    if (membership.owner_id !== req.userId)       return res.status(403).json({ error: 'Seul le propriétaire peut supprimer l\'équipe' });
 
     await sql`UPDATE tasks SET team_id = NULL WHERE team_id = ${req.params.id}`;
     await sql`DELETE FROM teams WHERE id = ${req.params.id}`;

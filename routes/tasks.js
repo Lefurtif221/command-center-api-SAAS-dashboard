@@ -36,7 +36,7 @@ router.post('/', auth, async (req, res) => {
       const member = await sql`
         SELECT 1 FROM team_members WHERE team_id = ${team_id} AND user_id = ${req.userId}
       `;
-      if (member.length === 0) return res.status(403).json({ error: 'Vous n\'etes pas membre de cette equipe' });
+      if (member.length === 0) return res.status(403).json({ error: 'Vous n\'êtes pas membre de cette équipe' });
     }
 
     const result = await sql`
@@ -79,7 +79,7 @@ router.put('/:id', auth, async (req, res) => {
         const member = await sql`
           SELECT 1 FROM team_members WHERE team_id = ${team_id} AND user_id = ${req.userId}
         `;
-        if (member.length === 0) return res.status(403).json({ error: 'Vous n\'etes pas membre de cette equipe' });
+        if (member.length === 0) return res.status(403).json({ error: 'Vous n\'êtes pas membre de cette équipe' });
       }
       await sql`UPDATE tasks SET team_id = ${team_id || null}, updated_at = NOW() WHERE id = ${req.params.id}`;
       result[0].team_id = team_id || null;
@@ -107,7 +107,7 @@ router.delete('/:id', auth, async (req, res) => {
     const isTeamAdmin = task.team_id && ['owner', 'admin'].includes(task.my_role);
 
     if (!isOwner && !isTeamAdmin) {
-      return res.status(403).json({ error: 'Seul le proprietaire ou un administrateur peut supprimer cette tache' });
+      return res.status(403).json({ error: 'Seul le propriétaire ou un administrateur peut supprimer cette tâche' });
     }
 
     await sql`DELETE FROM tasks WHERE id = ${req.params.id}`;

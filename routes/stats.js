@@ -10,7 +10,7 @@ router.post('/focus', auth, async (req, res) => {
   try {
     const duration = parseInt(req.body.duration_seconds, 10);
     if (!Number.isFinite(duration) || duration < 60 || duration > 86400) {
-      return res.status(400).json({ error: 'Duree invalide' });
+      return res.status(400).json({ error: 'Durée invalide' });
     }
     const title = (req.body.task_title || '').slice(0, 500);
     const rows = await sql`
