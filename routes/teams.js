@@ -124,6 +124,29 @@ router.get('/', auth, async (req, res) => {
   }
 });
 
+// Invitations recues par l'utilisateur connecte (affichees dans l'onglet Equipe)
+router.get('/my-invitations', auth, async (req, res) => {
+  try {
+    const me = await sql`SELECT email FROM users WHERE id = ${req.userId}`;
+    if (me.length === 0) return res.status(404).json({ error: 'Utilisateur introuvable' });
+    const invitations = await sql`
+      SELECT i.id, i.token, i.role, i.expires_at, t.id AS team_id, t.name AS team_name,
+             u.name AS inviter_name
+      FROM team_invitations i
+      JOIN teams t ON t.id = i.team_id
+      LEFT JOIN users u ON u.id = i.invited_by
+      WHERE lower(i.email) = lower(${me[0].email})
+        AND i.status = 'pending'
+        AND i.expires_at > now()
+      ORDER BY i.created_at DESC
+    `;
+    res.json({ invitations });
+  } catch (err) {
+    console.error('My invitations error:', err);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
 // Details d'une equipe (membres + invitations en attente)
 router.get('/:id', auth, async (req, res) => {
   try {
@@ -319,6 +342,32 @@ router.post('/invitations/:token/accept', auth, async (req, res) => {
     res.json({ team: { id: inv.team_id, name: inv.team_name }, role: inv.role });
   } catch (err) {
     console.error('Accept invite error:', err);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// Refuser une invitation
+router.post('/invitations/:token/decline', auth, async (req, res) => {
+  try {
+    const rows = await sql`
+      SELECT i.id, i.email, i.status, i.expires_at
+      FROM team_invitations i
+      WHERE i.token = ${req.params.token}
+    `;
+    if (rows.length === 0) return res.status(404).json({ error: 'Invitation introuvable' });
+    const inv = rows[0];
+    if (inv.status !== 'pending') return res.status(400).json({ error: 'Cette invitation n\'est plus valide' });
+    if (new Date(inv.expires_at) < new Date()) return res.status(400).json({ error: 'Invitation expirée' });
+
+    const me = await sql`SELECT email FROM users WHERE id = ${req.userId}`;
+    if (me[0].email.toLowerCase() !== inv.email.toLowerCase()) {
+      return res.status(403).json({ error: 'Cette invitation est adressée à ' + inv.email });
+    }
+
+    await sql`UPDATE team_invitations SET status = 'declined' WHERE id = ${inv.id}`;
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Decline invite error:', err);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
