@@ -8,14 +8,13 @@ const { auth, JWT_SECRET } = require('../middleware/auth');
 const { publicUser } = require('../middleware/plan');
 const { isValidEmail } = require('../lib/email-format');
 
-const EMAIL_SEND_ERROR = "L'email de verification n'a pas pu etre envoye. Reessaie dans un instant.";
-
 const router = express.Router();
 
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
 const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 
-// Generate a 6-digit code, store it and email it to the user
+// Generate a 6-digit code, store it and email it to the user.
+// Retourne true si le code est parti, false sinon (email indisponible).
 async function sendVerificationCode(user) {
   const code = String(crypto.randomInt(100000, 1000000));
   await sql`DELETE FROM email_verification_codes WHERE user_id = ${user.id}`;
@@ -23,34 +22,45 @@ async function sendVerificationCode(user) {
     INSERT INTO email_verification_codes (user_id, code, expires_at)
     VALUES (${user.id}, ${code}, now() + interval '15 minutes')
   `;
-  if (resend) {
-    try {
-      await resend.emails.send({
-        from: 'Personal Place <onboarding@resend.dev>',
-        to: user.email,
-        subject: 'Votre code de verification',
-        html: `
-          <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto; padding: 32px;">
-            <h2 style="color: #0b0f14; margin-bottom: 16px;">Bonjour ${user.name || ''},</h2>
-            <p style="color: #666; font-size: 14px; line-height: 1.6;">
-              Voici votre code de verification pour finaliser votre inscription :
-            </p>
-            <p style="font-size: 32px; letter-spacing: 10px; font-weight: 700; color: #0b0f14; text-align: center; background: #f4f6f8; padding: 16px; border-radius: 8px;">${code}</p>
-            <p style="color: #999; font-size: 12px; margin-top: 24px;">
-              Ce code expire dans 15 minutes. Si vous n'avez pas cree de compte, ignorez cet email.
-            </p>
-          </div>
-        `,
-      });
-    } catch (err) {
-      console.error('Verification email error:', err.message);
-      const sendErr = new Error('verification email failed');
-      sendErr.emailSend = true;
-      throw sendErr;
-    }
-  } else {
-    console.log(`[dev] Code de verification pour ${user.email}: ${code}`);
+  if (process.env.RESEND_SIMULATE_FAILURE === '1') {
+    console.log(`[sim] envoi email echoue pour ${user.email}`);
+    return false;
   }
+  if (!resend) {
+    console.log(`[dev] Code de verification pour ${user.email}: ${code}`);
+    return true;
+  }
+  try {
+    await resend.emails.send({
+      from: 'Personal Place <onboarding@resend.dev>',
+      to: user.email,
+      subject: 'Votre code de verification',
+      html: `
+        <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto; padding: 32px;">
+          <h2 style="color: #0b0f14; margin-bottom: 16px;">Bonjour ${user.name || ''},</h2>
+          <p style="color: #666; font-size: 14px; line-height: 1.6;">
+            Voici votre code de verification pour finaliser votre inscription :
+          </p>
+          <p style="font-size: 32px; letter-spacing: 10px; font-weight: 700; color: #0b0f14; text-align: center; background: #f4f6f8; padding: 16px; border-radius: 8px;">${code}</p>
+          <p style="color: #999; font-size: 12px; margin-top: 24px;">
+            Ce code expire dans 15 minutes. Si vous n'avez pas cree de compte, ignorez cet email.
+          </p>
+        </div>
+      `,
+    });
+    return true;
+  } catch (err) {
+    console.error('Verification email error:', err.message);
+    return false;
+  }
+}
+
+// Email indisponible (pas de domaine verifie, service en panne...) :
+// on n enferme jamais l'utilisateur : le compte est active quand meme.
+async function activateWithoutVerification(user) {
+  await sql`UPDATE users SET email_verified = true, updated_at = NOW() WHERE id = ${user.id}`;
+  await sql`DELETE FROM email_verification_codes WHERE user_id = ${user.id}`;
+  console.warn(`[email indisponible] compte active sans verification: ${user.email}`);
 }
 
 // Welcome email sent once the account is active
@@ -107,13 +117,20 @@ router.post('/signup', async (req, res) => {
       return res.status(400).json({ error: 'Le mot de passe doit contenir au moins 8 caractères' });
     }
 
-    const existing = await sql`SELECT id, email_verified FROM users WHERE email = ${email}`;
+    const existing = await sql`SELECT id, email, name, initials, plan, email_verified FROM users WHERE email = ${email}`;
     if (existing.length > 0) {
       if (existing[0].email_verified) {
         return res.status(409).json({ error: 'Un compte existe déjà avec cet email' });
       }
       // Un compte non verifie existe deja : on renvoie un nouveau code
-      await sendVerificationCode({ id: existing[0].id, email, name });
+      const sent = await sendVerificationCode(existing[0]);
+      if (!sent) {
+        // Email indisponible : on active le compte pour ne pas enfermer l'utilisateur
+        await activateWithoutVerification(existing[0]);
+        await sendWelcomeEmail(existing[0]);
+        const token = jwt.sign({ userId: existing[0].id }, JWT_SECRET, { expiresIn: '7d' });
+        return res.status(201).json({ token, user: publicUser(existing[0]) });
+      }
       return res.status(201).json({ needsVerification: true, email });
     }
 
@@ -126,11 +143,16 @@ router.post('/signup', async (req, res) => {
       RETURNING id, name, email, initials, plan, created_at
     `;
 
-    await sendVerificationCode(result[0]);
+    const sent = await sendVerificationCode(result[0]);
+    if (!sent) {
+      await activateWithoutVerification(result[0]);
+      await sendWelcomeEmail(result[0]);
+      const token = jwt.sign({ userId: result[0].id }, JWT_SECRET, { expiresIn: '7d' });
+      return res.status(201).json({ token, user: publicUser(result[0]) });
+    }
 
     res.status(201).json({ needsVerification: true, email });
   } catch (err) {
-    if (err.emailSend) return res.status(503).json({ error: EMAIL_SEND_ERROR });
     console.error('Signup error:', err);
     res.status(500).json({ error: 'Erreur serveur' });
   }
@@ -189,12 +211,14 @@ router.post('/resend-code', async (req, res) => {
     }
 
     const rows = await sql`SELECT id, name, email FROM users WHERE email = ${email} AND email_verified = false AND password_hash IS NOT NULL`;
-    if (rows.length > 0) await sendVerificationCode(rows[0]);
+    if (rows.length > 0) {
+      const sent = await sendVerificationCode(rows[0]);
+      if (!sent) console.warn(`[email indisponible] renvoi de code impossible pour ${email}`);
+    }
 
     // Always succeed to prevent email enumeration
     res.json({ success: true, message: 'Si un compte est en attente, un nouveau code a été envoyé.' });
   } catch (err) {
-    if (err.emailSend) return res.status(503).json({ error: EMAIL_SEND_ERROR });
     console.error('Resend code error:', err);
     res.status(500).json({ error: 'Erreur serveur' });
   }
@@ -220,7 +244,16 @@ router.post('/login', async (req, res) => {
     }
 
     if (user.email_verified === false) {
-      return res.status(403).json({ error: 'Email non vérifié', needsVerification: true, email });
+      const sent = await sendVerificationCode(user);
+      if (sent) {
+        return res.status(403).json({ error: 'Email non vérifié', needsVerification: true, email });
+      }
+      // Email indisponible : l'utilisateur a prouve son mot de passe, on active
+      await activateWithoutVerification(user);
+      await sendWelcomeEmail(user);
+      const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: '7d' });
+      const { password_hash, ...safeUser } = user;
+      return res.json({ token, user: publicUser(safeUser) });
     }
 
     const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: '7d' });

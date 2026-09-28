@@ -568,6 +568,52 @@ test('paiement : init retourne le guichet (ou 503 sans identifiants), abonnement
   }
 });
 
+test('auth: email indisponible -> compte active sans verification', async () => {
+  // Serveur dedie qui simule une panne de l email (Resend sans domaine verifie)
+  const fallbackPort = Number(PORT) + 1;
+  const fallbackBase = `http://localhost:${fallbackPort}`;
+  const child2 = spawn(process.execPath, ['index.js'], {
+    cwd: path.join(__dirname, '..'),
+    env: { ...process.env, PORT: String(fallbackPort), RESEND_SIMULATE_FAILURE: '1', ADMIN_EMAILS: 'smoke-admin@test.local' },
+    stdio: 'ignore',
+  });
+  try {
+    const start = Date.now();
+    let ready = false;
+    while (Date.now() - start < 30000) {
+      try {
+        const res = await fetch(`${fallbackBase}/api/health`);
+        if (res.ok) { ready = true; break; }
+      } catch { /* pas encore pret */ }
+      await new Promise(r => setTimeout(r, 400));
+    }
+    assert.ok(ready, 'serveur fallback inaccessible');
+
+    const email = `fallback-${uniq()}@test.local`;
+    const created = await fetch(`${fallbackBase}/api/auth/signup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Fallback Test', email, password: 'password123' }),
+    }).then(r => r.json());
+
+    assert.ok(created.token, 'le compte doit etre connecte directement');
+    assert.strictEqual(created.needsVerification, undefined);
+    ids.push(created.user.id);
+
+    const rows = await sql`SELECT email_verified FROM users WHERE email = ${email}`;
+    assert.strictEqual(rows[0].email_verified, true, 'compte active malgre l email indisponible');
+
+    const login = await fetch(`${fallbackBase}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password: 'password123' }),
+    }).then(r => r.json());
+    assert.ok(login.token, 'login direct sans blocage');
+  } finally {
+    child2.kill();
+  }
+});
+
 test('nettoyage des comptes de test', async () => {
   const sql = require(path.join(__dirname, '..', 'db'));
   for (const id of ids) {
