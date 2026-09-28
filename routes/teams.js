@@ -241,7 +241,7 @@ router.post('/:id/invitations', auth, async (req, res) => {
     if (resend) {
       const inviter = await sql`SELECT name FROM users WHERE id = ${req.userId}`;
       try {
-        await resend.emails.send({
+        const { error } = await resend.emails.send({
           from: 'Personal Place <onboarding@resend.dev>',
           to: email,
           subject: `${inviter[0]?.name || 'Quelqu un'} vous invite à rejoindre "${membership.name}"`,
@@ -259,6 +259,7 @@ router.post('/:id/invitations', auth, async (req, res) => {
             </div>
           `,
         });
+        if (error) console.error('Invite email error:', error.message || JSON.stringify(error));
       } catch (e) {
         console.error('Invite email error:', e.message);
       }

@@ -31,7 +31,8 @@ async function sendVerificationCode(user) {
     return true;
   }
   try {
-    await resend.emails.send({
+    // Le SDK Resend ne throw pas : l'erreur (ex: 403 sans domaine verifie) est dans `error`
+    const { error } = await resend.emails.send({
       from: 'Personal Place <onboarding@resend.dev>',
       to: user.email,
       subject: 'Votre code de verification',
@@ -48,6 +49,10 @@ async function sendVerificationCode(user) {
         </div>
       `,
     });
+    if (error) {
+      console.error('Verification email error:', error.message || JSON.stringify(error));
+      return false;
+    }
     return true;
   } catch (err) {
     console.error('Verification email error:', err.message);
@@ -67,7 +72,7 @@ async function activateWithoutVerification(user) {
 async function sendWelcomeEmail(user) {
   if (!resend) return;
   try {
-    await resend.emails.send({
+    const { error } = await resend.emails.send({
       from: 'Personal Place <onboarding@resend.dev>',
       to: user.email,
       subject: 'Bienvenue sur Personal Place',
@@ -86,6 +91,7 @@ async function sendWelcomeEmail(user) {
         </div>
       `,
     });
+    if (error) console.error('Welcome email error:', error.message || JSON.stringify(error));
   } catch (err) {
     console.error('Welcome email error:', err.message);
   }
@@ -458,7 +464,7 @@ router.post('/forgot-password', async (req, res) => {
 
     if (resend) {
       const resetUrl = `${FRONTEND_URL}/auth/reset-password?token=${token}`;
-      await resend.emails.send({
+      const { error } = await resend.emails.send({
         from: 'Personal Place <onboarding@resend.dev>',
         to: email,
         subject: 'Réinitialisation de votre mot de passe',
@@ -477,6 +483,7 @@ router.post('/forgot-password', async (req, res) => {
           </div>
         `,
       });
+      if (error) console.error('Reset password email error:', error.message || JSON.stringify(error));
     }
 
     res.json({ success: true, message: 'Si un compte existe, un email a été envoyé.' });
