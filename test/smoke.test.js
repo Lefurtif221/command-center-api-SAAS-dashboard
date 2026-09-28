@@ -3,6 +3,7 @@ const assert = require('node:assert');
 const { spawn } = require('node:child_process');
 const path = require('node:path');
 require('dotenv').config();
+const sql = require('../db');
 
 const PORT = process.env.TEST_PORT || 3999;
 const BASE = `http://localhost:${PORT}`;
@@ -22,6 +23,31 @@ async function api(pathname, { method = 'GET', token, body } = {}) {
   let data = null;
   try { data = await res.json(); } catch { data = null; }
   return { status: res.status, data };
+}
+
+// Inscription complete : signup -> code en DB -> verification -> token
+async function signupUser(name, email, password = 'password123') {
+  const created = await api('/api/auth/signup', {
+    method: 'POST',
+    body: { name, email, password },
+  });
+  assert.strictEqual(created.status, 201);
+  assert.ok(created.data.needsVerification, 'signup doit demander la verification email');
+  const rows = await sql`
+    SELECT c.code FROM email_verification_codes c
+    JOIN users u ON u.id = c.user_id
+    WHERE u.email = ${email}
+    ORDER BY c.created_at DESC
+    LIMIT 1
+  `;
+  assert.strictEqual(rows.length, 1, 'code de verification cree');
+  const verified = await api('/api/auth/verify-email', {
+    method: 'POST',
+    body: { email, code: rows[0].code },
+  });
+  assert.strictEqual(verified.status, 200);
+  assert.ok(verified.data.token);
+  return { data: verified.data };
 }
 
 async function waitForHealth(timeoutMs = 30000) {
@@ -61,16 +87,10 @@ test('route API inconnue -> 404 JSON', async () => {
   assert.ok(data.error);
 });
 
-test('auth: signup, login, /me, route protegee', async () => {
+test('auth: signup, verification, login, /me, route protegee', async () => {
   const email = `smoke-${uniq()}@test.local`;
-  const created = await api('/api/auth/signup', {
-    method: 'POST',
-    body: { name: 'Smoke Test', email, password: 'password123' },
-  });
-  assert.strictEqual(created.status, 201);
-  assert.ok(created.data.token);
-  const userId = created.data.user.id;
-  ids.push(userId);
+  const created = await signupUser('Smoke Test', email);
+  ids.push(created.data.user.id);
 
   const login = await api('/api/auth/login', {
     method: 'POST',
@@ -95,12 +115,56 @@ test('auth: mauvais mot de passe -> 401', async () => {
   assert.strictEqual(res.status, 401);
 });
 
+test('auth: code incorrect refuse, login bloque avant verification', async () => {
+  const email = `smoke-otp-${uniq()}@test.local`;
+  const created = await api('/api/auth/signup', {
+    method: 'POST',
+    body: { name: 'OTP Test', email, password: 'password123' },
+  });
+  assert.strictEqual(created.status, 201);
+  assert.ok(created.data.needsVerification);
+
+  const blocked = await api('/api/auth/login', {
+    method: 'POST',
+    body: { email, password: 'password123' },
+  });
+  assert.strictEqual(blocked.status, 403);
+  assert.strictEqual(blocked.data.needsVerification, true);
+  assert.strictEqual(blocked.data.email, email);
+
+  const wrong = await api('/api/auth/verify-email', {
+    method: 'POST',
+    body: { email, code: '000000' },
+  });
+  assert.strictEqual(wrong.status, 400);
+
+  const rows = await sql`
+    SELECT c.code FROM email_verification_codes c
+    JOIN users u ON u.id = c.user_id
+    WHERE u.email = ${email}
+    ORDER BY c.created_at DESC
+    LIMIT 1
+  `;
+  const verified = await api('/api/auth/verify-email', {
+    method: 'POST',
+    body: { email, code: rows[0].code },
+  });
+  assert.strictEqual(verified.status, 200);
+  ids.push(verified.data.user.id);
+
+  const resend = await api('/api/auth/resend-code', { method: 'POST', body: { email } });
+  assert.strictEqual(resend.status, 200);
+
+  const login = await api('/api/auth/login', {
+    method: 'POST',
+    body: { email, password: 'password123' },
+  });
+  assert.strictEqual(login.status, 200);
+});
+
 test('taches: CRUD complet', async () => {
   const email = `smoke-${uniq()}@test.local`;
-  const signup = await api('/api/auth/signup', {
-    method: 'POST',
-    body: { name: 'Tasks User', email, password: 'password123' },
-  });
+  const signup = await signupUser('Tasks User', email);
   ids.push(signup.data.user.id);
   const token = signup.data.token;
 
@@ -135,15 +199,9 @@ test('equipes: creation, invitation, acceptation, partage de tache', async () =>
   const ownerEmail = `smoke-owner-${uniq()}@test.local`;
   const guestEmail = `smoke-guest-${uniq()}@test.local`;
 
-  const owner = await api('/api/auth/signup', {
-    method: 'POST',
-    body: { name: 'Owner', email: ownerEmail, password: 'password123' },
-  });
+  const owner = await signupUser('Owner', ownerEmail);
   ids.push(owner.data.user.id);
-  const guest = await api('/api/auth/signup', {
-    method: 'POST',
-    body: { name: 'Guest', email: guestEmail, password: 'password123' },
-  });
+  const guest = await signupUser('Guest', guestEmail);
   ids.push(guest.data.user.id);
 
   const ownerToken = owner.data.token;
@@ -197,10 +255,7 @@ test('equipes: creation, invitation, acceptation, partage de tache', async () =>
 
   // Un non-membre ne peut pas creer de tache dans l'equipe
   const outsiderEmail = `smoke-outsider-${uniq()}@test.local`;
-  const outsider = await api('/api/auth/signup', {
-    method: 'POST',
-    body: { name: 'Outsider', email: outsiderEmail, password: 'password123' },
-  });
+  const outsider = await signupUser('Outsider', outsiderEmail);
   ids.push(outsider.data.user.id);
   const blocked = await api('/api/tasks', {
     method: 'POST',
@@ -265,10 +320,7 @@ test('equipes: creation, invitation, acceptation, partage de tache', async () =>
 test('gmail: plusieurs comptes distincts, suppression par compte', async () => {
   const sql = require(path.join(__dirname, '..', 'db'));
   const email = `smoke-${uniq()}@test.local`;
-  const signup = await api('/api/auth/signup', {
-    method: 'POST',
-    body: { name: 'Mail User', email, password: 'password123' },
-  });
+  const signup = await signupUser('Mail User', email);
   ids.push(signup.data.user.id);
   const token = signup.data.token;
   const userId = signup.data.user.id;
@@ -307,10 +359,7 @@ test('gmail: plusieurs comptes distincts, suppression par compte', async () => {
 test('formule gratuite : 1 equipe max, 3 membres max, puis liberations en pro', async () => {
   const sql = require(path.join(__dirname, '..', 'db'));
   const ownerEmail = `smoke-plan-${uniq()}@test.local`;
-  const owner = await api('/api/auth/signup', {
-    method: 'POST',
-    body: { name: 'Plan Owner', email: ownerEmail, password: 'password123' },
-  });
+  const owner = await signupUser('Plan Owner', ownerEmail);
   ids.push(owner.data.user.id);
   const ownerToken = owner.data.token;
   const ownerId = owner.data.user.id;
@@ -333,7 +382,7 @@ test('formule gratuite : 1 equipe max, 3 membres max, puis liberations en pro', 
   const g2 = `smoke-plan-g2-${uniq()}@test.local`;
   const g3 = `smoke-plan-g3-${uniq()}@test.local`;
   for (const g of [g1, g2, g3]) {
-    const u = await api('/api/auth/signup', { method: 'POST', body: { name: 'Guest', email: g, password: 'password123' } });
+    const u = await signupUser('Guest', g);
     ids.push(u.data.user.id);
   }
 
@@ -372,11 +421,7 @@ test('formule gratuite : 1 equipe max, 3 membres max, puis liberations en pro', 
 
 test('stats : sessions de focus, historique gratuit 7 jours, compte admin en Entreprise', async () => {
   const email = `smoke-stats-${uniq()}@test.local`;
-  const signup = await api('/api/auth/signup', {
-    method: 'POST',
-    body: { name: 'Stats User', email, password: 'password123' },
-  });
-  assert.strictEqual(signup.status, 201);
+  const signup = await signupUser('Stats User', email);
   ids.push(signup.data.user.id);
   const token = signup.data.token;
 
@@ -417,16 +462,13 @@ test('stats : sessions de focus, historique gratuit 7 jours, compte admin en Ent
   const adminEmail = 'smoke-admin@test.local';
   let adminUser;
   let adminToken;
-  const admin = await api('/api/auth/signup', {
-    method: 'POST',
-    body: { name: 'Admin Test', email: adminEmail, password: 'password123' },
-  });
-  if (admin.status === 201) {
+  try {
+    const admin = await signupUser('Admin Test', adminEmail);
     adminUser = admin.data.user;
     adminToken = admin.data.token;
     ids.push(adminUser.id);
-  } else {
-    // Compte deja cree par un passage precedent : on se connecte
+  } catch {
+    // Compte deja cree et verifie par un passage precedent : on se connecte
     const adminLogin = await api('/api/auth/login', {
       method: 'POST',
       body: { email: adminEmail, password: 'password123' },
@@ -450,11 +492,7 @@ test('stats : sessions de focus, historique gratuit 7 jours, compte admin en Ent
 
 test('paiement : init retourne le guichet (ou 503 sans identifiants), abonnement et webhook', async () => {
   const email = `smoke-pay-${uniq()}@test.local`;
-  const signup = await api('/api/auth/signup', {
-    method: 'POST',
-    body: { name: 'Pay User', email, password: 'password123' },
-  });
-  assert.strictEqual(signup.status, 201);
+  const signup = await signupUser('Pay User', email);
   ids.push(signup.data.user.id);
   const token = signup.data.token;
 

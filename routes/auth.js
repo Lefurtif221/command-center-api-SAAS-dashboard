@@ -12,6 +12,69 @@ const router = express.Router();
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
 const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 
+// Generate a 6-digit code, store it and email it to the user
+async function sendVerificationCode(user) {
+  const code = String(crypto.randomInt(100000, 1000000));
+  await sql`DELETE FROM email_verification_codes WHERE user_id = ${user.id}`;
+  await sql`
+    INSERT INTO email_verification_codes (user_id, code, expires_at)
+    VALUES (${user.id}, ${code}, now() + interval '15 minutes')
+  `;
+  if (resend) {
+    try {
+      await resend.emails.send({
+        from: 'Personal Place <onboarding@resend.dev>',
+        to: user.email,
+        subject: 'Votre code de verification',
+        html: `
+          <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto; padding: 32px;">
+            <h2 style="color: #0b0f14; margin-bottom: 16px;">Bonjour ${user.name || ''},</h2>
+            <p style="color: #666; font-size: 14px; line-height: 1.6;">
+              Voici votre code de verification pour finaliser votre inscription :
+            </p>
+            <p style="font-size: 32px; letter-spacing: 10px; font-weight: 700; color: #0b0f14; text-align: center; background: #f4f6f8; padding: 16px; border-radius: 8px;">${code}</p>
+            <p style="color: #999; font-size: 12px; margin-top: 24px;">
+              Ce code expire dans 15 minutes. Si vous n'avez pas cree de compte, ignorez cet email.
+            </p>
+          </div>
+        `,
+      });
+    } catch (err) {
+      console.error('Verification email error:', err.message);
+    }
+  } else {
+    console.log(`[dev] Code de verification pour ${user.email}: ${code}`);
+  }
+}
+
+// Welcome email sent once the account is active
+async function sendWelcomeEmail(user) {
+  if (!resend) return;
+  try {
+    await resend.emails.send({
+      from: 'Personal Place <onboarding@resend.dev>',
+      to: user.email,
+      subject: 'Bienvenue sur Personal Place',
+      html: `
+        <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto; padding: 32px;">
+          <h2 style="color: #0b0f14; margin-bottom: 16px;">Bienvenue ${user.name || ''} !</h2>
+          <p style="color: #666; font-size: 14px; line-height: 1.6;">
+            Votre compte est active. Emails, taches, calendrier, focus et equipe : tout est au meme endroit.
+          </p>
+          <a href="${FRONTEND_URL}/dashboard" style="display: inline-block; background: #2563eb; color: #ffffff; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 14px; margin: 16px 0;">
+            Ouvrir mon espace
+          </a>
+          <p style="color: #999; font-size: 12px; margin-top: 24px;">
+            Un souci en route ? Reponds simplement a cet email.
+          </p>
+        </div>
+      `,
+    });
+  } catch (err) {
+    console.error('Welcome email error:', err.message);
+  }
+}
+
 // Verify Google ID token
 async function verifyGoogleToken(idToken) {
   const response = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${idToken}`);
@@ -35,26 +98,90 @@ router.post('/signup', async (req, res) => {
       return res.status(400).json({ error: 'Le mot de passe doit contenir au moins 8 caractères' });
     }
 
-    const existing = await sql`SELECT id FROM users WHERE email = ${email}`;
+    const existing = await sql`SELECT id, email_verified FROM users WHERE email = ${email}`;
     if (existing.length > 0) {
-      return res.status(409).json({ error: 'Un compte existe déjà avec cet email' });
+      if (existing[0].email_verified) {
+        return res.status(409).json({ error: 'Un compte existe déjà avec cet email' });
+      }
+      // Un compte non verifie existe deja : on renvoie un nouveau code
+      await sendVerificationCode({ id: existing[0].id, email, name });
+      return res.status(201).json({ needsVerification: true, email });
     }
 
     const hash = await bcrypt.hash(password, 12);
     const initials = name.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
 
     const result = await sql`
-      INSERT INTO users (name, email, password_hash, initials)
-      VALUES (${name}, ${email}, ${hash}, ${initials})
+      INSERT INTO users (name, email, password_hash, initials, email_verified)
+      VALUES (${name}, ${email}, ${hash}, ${initials}, false)
       RETURNING id, name, email, initials, plan, created_at
     `;
 
-    const user = result[0];
-    const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: '7d' });
+    await sendVerificationCode(result[0]);
 
-    res.status(201).json({ token, user: publicUser(user) });
+    res.status(201).json({ needsVerification: true, email });
   } catch (err) {
     console.error('Signup error:', err);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// Verify the signup code, activate the account and sign the user in
+router.post('/verify-email', async (req, res) => {
+  try {
+    const { email, code } = req.body;
+    if (!email || !code) return res.status(400).json({ error: 'Email et code requis' });
+
+    const rows = await sql`
+      SELECT c.id, c.code, c.attempts, u.id AS uid, u.name, u.email, u.initials, u.plan, u.avatar_url
+      FROM email_verification_codes c
+      JOIN users u ON u.id = c.user_id
+      WHERE u.email = ${email} AND u.email_verified = false AND c.expires_at > now()
+      ORDER BY c.created_at DESC
+      LIMIT 1
+    `;
+    if (rows.length === 0) {
+      return res.status(400).json({ error: 'Code expiré ou introuvable. Demande un nouveau code.' });
+    }
+    const row = rows[0];
+    if (row.attempts >= 5) {
+      await sql`DELETE FROM email_verification_codes WHERE id = ${row.id}`;
+      return res.status(429).json({ error: 'Trop de tentatives. Demande un nouveau code.' });
+    }
+    if (row.code !== String(code).trim()) {
+      await sql`UPDATE email_verification_codes SET attempts = attempts + 1 WHERE id = ${row.id}`;
+      return res.status(400).json({ error: 'Code incorrect' });
+    }
+
+    await sql`UPDATE users SET email_verified = true, updated_at = NOW() WHERE id = ${row.uid}`;
+    await sql`DELETE FROM email_verification_codes WHERE user_id = ${row.uid}`;
+
+    await sendWelcomeEmail({ name: row.name, email: row.email });
+
+    const token = jwt.sign({ userId: row.uid }, JWT_SECRET, { expiresIn: '7d' });
+    res.json({
+      token,
+      user: publicUser({ id: row.uid, name: row.name, email: row.email, initials: row.initials, plan: row.plan, avatar_url: row.avatar_url }),
+    });
+  } catch (err) {
+    console.error('Verify email error:', err);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// Resend the signup code
+router.post('/resend-code', async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ error: 'Email requis' });
+
+    const rows = await sql`SELECT id, name, email FROM users WHERE email = ${email} AND email_verified = false AND password_hash IS NOT NULL`;
+    if (rows.length > 0) await sendVerificationCode(rows[0]);
+
+    // Always succeed to prevent email enumeration
+    res.json({ success: true, message: 'Si un compte est en attente, un nouveau code a été envoyé.' });
+  } catch (err) {
+    console.error('Resend code error:', err);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
@@ -67,7 +194,7 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ error: 'Email et mot de passe requis' });
     }
 
-    const result = await sql`SELECT id, name, email, password_hash, initials, plan FROM users WHERE email = ${email}`;
+    const result = await sql`SELECT id, name, email, password_hash, initials, plan, email_verified FROM users WHERE email = ${email}`;
     if (result.length === 0) {
       return res.status(401).json({ error: 'Email ou mot de passe incorrect' });
     }
@@ -76,6 +203,10 @@ router.post('/login', async (req, res) => {
     const valid = await bcrypt.compare(password, user.password_hash);
     if (!valid) {
       return res.status(401).json({ error: 'Email ou mot de passe incorrect' });
+    }
+
+    if (user.email_verified === false) {
+      return res.status(403).json({ error: 'Email non vérifié', needsVerification: true, email });
     }
 
     const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: '7d' });
@@ -104,6 +235,7 @@ router.post('/google', async (req, res) => {
       WHERE oauth_provider = 'google' AND oauth_id = ${googleId}
     `;
 
+    let created = false;
     if (result.length === 0) {
       // Check if user exists with same email
       const existing = await sql`SELECT id FROM users WHERE email = ${email}`;
@@ -123,10 +255,12 @@ router.post('/google', async (req, res) => {
           VALUES (${name || email.split('@')[0]}, ${email}, 'google', ${googleId}, ${initials}, ${picture})
           RETURNING id, name, email, initials, plan, avatar_url
         `;
+        created = true;
       }
     }
 
     const user = result[0];
+    if (created) await sendWelcomeEmail(user);
     const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: '7d' });
 
     res.json({ token, user: publicUser(user) });
@@ -218,6 +352,7 @@ router.get('/google/callback', async (req, res) => {
       WHERE oauth_provider = 'google' AND oauth_id = ${googleId}
     `;
 
+    let created = false;
     if (result.length === 0) {
       const existing = await sql`SELECT id FROM users WHERE email = ${email}`;
       if (existing.length > 0) {
@@ -233,10 +368,12 @@ router.get('/google/callback', async (req, res) => {
           VALUES (${name || email.split('@')[0]}, ${email}, 'google', ${googleId}, ${initials}, ${picture})
           RETURNING id, name, email, initials, plan, avatar_url
         `;
+        created = true;
       }
     }
 
     const user = result[0];
+    if (created) await sendWelcomeEmail(user);
     const appToken = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: '7d' });
 
     res.redirect(FRONTEND_URL + '/auth?token=' + appToken + '&user=' + encodeURIComponent(JSON.stringify(publicUser(user))));
