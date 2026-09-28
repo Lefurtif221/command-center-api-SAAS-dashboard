@@ -165,6 +165,9 @@ if (sentryEnabled) {
       )
     `;
     await sql`CREATE INDEX IF NOT EXISTS idx_email_verification_user ON email_verification_codes(user_id, created_at DESC)`;
+    // Calendrier personnel : blocs avec debut/fin en minutes (fallback : hour*60)
+    await sql`ALTER TABLE calendar_events ADD COLUMN IF NOT EXISTS start_minute INTEGER`;
+    await sql`ALTER TABLE calendar_events ADD COLUMN IF NOT EXISTS end_minute INTEGER`;
     // Comptes proprietaire : formule Entreprise permanente
     for (const email of ADMIN_EMAILS) {
       await sql`UPDATE users SET plan = 'entreprise' WHERE lower(email) = ${email}`;

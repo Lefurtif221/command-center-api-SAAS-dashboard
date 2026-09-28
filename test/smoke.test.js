@@ -614,6 +614,69 @@ test('auth: email indisponible -> compte active sans verification', async () => 
   }
 });
 
+test('calendrier : blocs debut/fin, mise a jour, suppression', async () => {
+  const email = `smoke-cal-${uniq()}@test.local`;
+  const signup = await signupUser('Cal User', email);
+  ids.push(signup.data.user.id);
+  const token = signup.data.token;
+
+  // Bloc avec debut/fin en minutes (style emploi du temps)
+  const created = await api('/api/calendar', {
+    method: 'POST',
+    token,
+    body: { title: 'Bloc focus', date: '2026-09-30', start_minute: 540, end_minute: 615, color: 'success' },
+  });
+  assert.strictEqual(created.status, 201);
+  assert.strictEqual(created.data.event.start_minute, 540);
+  assert.strictEqual(created.data.event.end_minute, 615);
+  assert.strictEqual(created.data.event.hour, 9);
+  const id = created.data.event.id;
+
+  // Plusieurs blocs le meme jour (y compris qui se chevauchent)
+  const second = await api('/api/calendar', {
+    method: 'POST',
+    token,
+    body: { title: 'Point rapide', date: '2026-09-30', start_minute: 570, end_minute: 600 },
+  });
+  assert.strictEqual(second.status, 201);
+
+  // Ancien format heure seule : conserve pour compatibilite
+  const legacy = await api('/api/calendar', {
+    method: 'POST',
+    token,
+    body: { title: 'Legacy', date: '2026-10-01', hour: 14 },
+  });
+  assert.strictEqual(legacy.status, 201);
+  assert.strictEqual(legacy.data.event.start_minute, 840);
+  assert.strictEqual(legacy.data.event.end_minute, 900);
+
+  // Fin apres debut obligatoire
+  const bad = await api('/api/calendar', {
+    method: 'POST',
+    token,
+    body: { title: 'Invalide', date: '2026-09-30', start_minute: 600, end_minute: 540 },
+  });
+  assert.strictEqual(bad.status, 400);
+
+  const list = await api('/api/calendar', { token });
+  assert.strictEqual(list.status, 200);
+  assert.strictEqual(list.data.events.filter(e => e.date === '2026-09-30').length, 2);
+
+  const upd = await api(`/api/calendar/${id}`, {
+    method: 'PUT',
+    token,
+    body: { title: 'Bloc focus modifie', date: '2026-09-30', start_minute: 600, end_minute: 720, color: 'purple' },
+  });
+  assert.strictEqual(upd.status, 200);
+  assert.strictEqual(upd.data.event.title, 'Bloc focus modifie');
+  assert.strictEqual(upd.data.event.end_minute, 720);
+
+  const del = await api(`/api/calendar/${id}`, { method: 'DELETE', token });
+  assert.strictEqual(del.status, 200);
+  const after = await api('/api/calendar', { token });
+  assert.ok(!after.data.events.some(e => e.id === id));
+});
+
 test('nettoyage des comptes de test', async () => {
   const sql = require(path.join(__dirname, '..', 'db'));
   for (const id of ids) {
