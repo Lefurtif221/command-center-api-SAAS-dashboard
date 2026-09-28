@@ -677,6 +677,35 @@ test('calendrier : blocs debut/fin, mise a jour, suppression', async () => {
   assert.ok(!after.data.events.some(e => e.id === id));
 });
 
+test('retours : enregistrement valide, validations refusees', async () => {
+  const email = `smoke-fb-${uniq()}@test.local`;
+  const signup = await signupUser('Feedback User', email);
+  ids.push(signup.data.user.id);
+  const token = signup.data.token;
+
+  const anon = await api('/api/feedback', { method: 'POST', body: { message: 'anon' } });
+  assert.strictEqual(anon.status, 401);
+
+  const created = await api('/api/feedback', {
+    method: 'POST',
+    token,
+    body: { category: 'bug', message: 'Le calendrier reste bloque sur la semaine passee', page: 'calendar' },
+  });
+  assert.strictEqual(created.status, 201);
+  assert.strictEqual(created.data.feedback.category, 'bug');
+
+  // Categorie inconnue -> other ; message vide -> refuse ; trop long -> refuse
+  const fallback = await api('/api/feedback', { method: 'POST', token, body: { category: 'zzz', message: 'ok' } });
+  assert.strictEqual(fallback.status, 201);
+  assert.strictEqual(fallback.data.feedback.category, 'other');
+
+  const empty = await api('/api/feedback', { method: 'POST', token, body: { message: '   ' } });
+  assert.strictEqual(empty.status, 400);
+
+  const long = await api('/api/feedback', { method: 'POST', token, body: { message: 'x'.repeat(2001) } });
+  assert.strictEqual(long.status, 400);
+});
+
 test('nettoyage des comptes de test', async () => {
   const sql = require(path.join(__dirname, '..', 'db'));
   for (const id of ids) {

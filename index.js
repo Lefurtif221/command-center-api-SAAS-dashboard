@@ -9,6 +9,7 @@ const whatsappRoutes = require('./routes/whatsapp');
 const teamsRoutes = require('./routes/teams');
 const statsRoutes = require('./routes/stats');
 const payRoutes = require('./routes/pay');
+const feedbackRoutes = require('./routes/feedback');
 const { ADMIN_EMAILS } = require('./middleware/plan');
 const sql = require('./db');
 
@@ -168,6 +169,17 @@ if (sentryEnabled) {
     // Calendrier personnel : blocs avec debut/fin en minutes (fallback : hour*60)
     await sql`ALTER TABLE calendar_events ADD COLUMN IF NOT EXISTS start_minute INTEGER`;
     await sql`ALTER TABLE calendar_events ADD COLUMN IF NOT EXISTS end_minute INTEGER`;
+    // Retours utilisateurs (consules par l admin)
+    await sql`
+      CREATE TABLE IF NOT EXISTS feedbacks (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+        category VARCHAR(30) NOT NULL DEFAULT 'idea',
+        message TEXT NOT NULL,
+        page VARCHAR(100),
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `;
     // Comptes proprietaire : formule Entreprise permanente
     for (const email of ADMIN_EMAILS) {
       await sql`UPDATE users SET plan = 'entreprise' WHERE lower(email) = ${email}`;
@@ -223,6 +235,7 @@ app.use('/api/whatsapp', whatsappRoutes);
 app.use('/api/teams', teamsRoutes);
 app.use('/api/stats', statsRoutes);
 app.use('/api/pay', payRoutes);
+app.use('/api/feedback', feedbackRoutes);
 
 // IP publique sortante de ce serveur (a afficher au partenaire a whitelist,
 // ex: CinetPay). Cachee 10 min pour ne pas appeler le service exterieur a chaque requete.
