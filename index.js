@@ -239,7 +239,7 @@ async function egressIp() {
 app.get('/api/health', async (req, res) => {
   try {
     await sql`SELECT 1`;
-    res.json({ status: 'ok', db: 'ok', timestamp: new Date().toISOString(), egress: await egressIp() });
+    res.json({ status: 'ok', db: 'ok', email: !!process.env.RESEND_API_KEY, timestamp: new Date().toISOString(), egress: await egressIp() });
   } catch (err) {
     res.status(503).json({ status: 'degraded', db: 'ko', error: err.message });
   }
