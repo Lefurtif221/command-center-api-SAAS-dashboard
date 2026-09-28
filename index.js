@@ -10,6 +10,7 @@ const teamsRoutes = require('./routes/teams');
 const statsRoutes = require('./routes/stats');
 const payRoutes = require('./routes/pay');
 const feedbackRoutes = require('./routes/feedback');
+const referralRoutes = require('./routes/referral');
 const { ADMIN_EMAILS } = require('./middleware/plan');
 const sql = require('./db');
 
@@ -180,6 +181,18 @@ if (sentryEnabled) {
         created_at TIMESTAMPTZ DEFAULT NOW()
       )
     `;
+    // Parrainage : lien perso avec code pour inviter des amis
+    await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_code TEXT`;
+    await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by UUID REFERENCES users(id) ON DELETE SET NULL`;
+    await sql`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_referral_code ON users(referral_code)`;
+    await sql`
+      CREATE TABLE IF NOT EXISTS referrals (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        referrer_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        referred_id UUID UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `;
     // Comptes proprietaire : formule Entreprise permanente
     for (const email of ADMIN_EMAILS) {
       await sql`UPDATE users SET plan = 'entreprise' WHERE lower(email) = ${email}`;
@@ -236,6 +249,7 @@ app.use('/api/teams', teamsRoutes);
 app.use('/api/stats', statsRoutes);
 app.use('/api/pay', payRoutes);
 app.use('/api/feedback', feedbackRoutes);
+app.use('/api/me/referral', referralRoutes);
 
 // IP publique sortante de ce serveur (a afficher au partenaire a whitelist,
 // ex: CinetPay). Cachee 10 min pour ne pas appeler le service exterieur a chaque requete.

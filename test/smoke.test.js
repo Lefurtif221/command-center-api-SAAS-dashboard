@@ -706,6 +706,47 @@ test('retours : enregistrement valide, validations refusees', async () => {
   assert.strictEqual(long.status, 400);
 });
 
+test('parrainage : code, attach une fois, refus des cas invalides', async () => {
+  const parrainEmail = `smoke-ref-p-${uniq()}@test.local`;
+  const parrain = await signupUser('Parrain Test', parrainEmail);
+  ids.push(parrain.data.user.id);
+  const parrainToken = parrain.data.token;
+
+  const inviteEmail = `smoke-ref-i-${uniq()}@test.local`;
+  const invite = await signupUser('Invite Test', inviteEmail);
+  ids.push(invite.data.user.id);
+  const inviteToken = invite.data.token;
+
+  const anon = await api('/api/me/referral');
+  assert.strictEqual(anon.status, 401);
+
+  // Le code est cree au premier appel, 6 caracteres sans caracteres ambigus
+  const mine = await api('/api/me/referral', { token: parrainToken });
+  assert.strictEqual(mine.status, 200);
+  assert.ok(/^[A-Z2-9]{6}$/.test(mine.data.code), `code invalide: ${mine.data.code}`);
+
+  const again = await api('/api/me/referral', { token: parrainToken });
+  assert.strictEqual(again.data.code, mine.data.code);
+
+  // Ref inconnu -> ignore sans erreur
+  const unknown = await api('/api/me/referral/attach', { method: 'POST', token: inviteToken, body: { ref: 'ZZZZZZ' } });
+  assert.strictEqual(unknown.status, 200);
+  assert.strictEqual(unknown.data.attached, false);
+
+  // L'invite rattache le parrain
+  const attached = await api('/api/me/referral/attach', { method: 'POST', token: inviteToken, body: { ref: mine.data.code } });
+  assert.strictEqual(attached.status, 200);
+  assert.strictEqual(attached.data.attached, true);
+
+  // Une seule attribution : une deuxieme tentative ne change rien
+  const second = await api('/api/me/referral/attach', { method: 'POST', token: inviteToken, body: { ref: mine.data.code } });
+  assert.strictEqual(second.data.attached, false);
+
+  // Son propre code ne compte pas
+  const self = await api('/api/me/referral/attach', { method: 'POST', token: parrainToken, body: { ref: mine.data.code } });
+  assert.strictEqual(self.data.attached, false);
+});
+
 test('nettoyage des comptes de test', async () => {
   const sql = require(path.join(__dirname, '..', 'db'));
   for (const id of ids) {
