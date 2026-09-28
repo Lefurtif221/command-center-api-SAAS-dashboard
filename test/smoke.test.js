@@ -115,6 +115,25 @@ test('auth: mauvais mot de passe -> 401', async () => {
   assert.strictEqual(res.status, 401);
 });
 
+test('auth: email mal ecrit refuse a l inscription', async () => {
+  const { isValidEmail } = require('../lib/email-format');
+  assert.strictEqual(isValidEmail('prenom@famille.com'), true);
+  assert.strictEqual(isValidEmail('user@site.fr'), true);
+  assert.strictEqual(isValidEmail('a@b.local'), true);
+  assert.strictEqual(isValidEmail('x@gmail.col'), false);
+  assert.strictEqual(isValidEmail('pas-de-at.com'), false);
+  assert.strictEqual(isValidEmail('a b@c.com'), false);
+  assert.strictEqual(isValidEmail('deux@@c.com'), false);
+  assert.strictEqual(isValidEmail(''), false);
+
+  const bad = await api('/api/auth/signup', {
+    method: 'POST',
+    body: { name: 'Bad Email', email: `bad-${uniq()}@gmail.col`, password: 'password123' },
+  });
+  assert.strictEqual(bad.status, 400);
+  assert.ok(/invalide/i.test(bad.data.error), `message attendu, recu: ${bad.data.error}`);
+});
+
 test('auth: code incorrect refuse, login bloque avant verification', async () => {
   const email = `smoke-otp-${uniq()}@test.local`;
   const created = await api('/api/auth/signup', {

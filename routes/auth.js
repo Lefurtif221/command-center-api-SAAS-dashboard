@@ -6,6 +6,9 @@ const { Resend } = require('resend');
 const sql = require('../db');
 const { auth, JWT_SECRET } = require('../middleware/auth');
 const { publicUser } = require('../middleware/plan');
+const { isValidEmail } = require('../lib/email-format');
+
+const EMAIL_SEND_ERROR = "L'email de verification n'a pas pu etre envoye. Reessaie dans un instant.";
 
 const router = express.Router();
 
@@ -41,6 +44,9 @@ async function sendVerificationCode(user) {
       });
     } catch (err) {
       console.error('Verification email error:', err.message);
+      const sendErr = new Error('verification email failed');
+      sendErr.emailSend = true;
+      throw sendErr;
     }
   } else {
     console.log(`[dev] Code de verification pour ${user.email}: ${code}`);
@@ -94,6 +100,9 @@ router.post('/signup', async (req, res) => {
     if (!name || !email || !password) {
       return res.status(400).json({ error: 'Tous les champs sont requis' });
     }
+    if (!isValidEmail(email)) {
+      return res.status(400).json({ error: "Adresse email invalide : verifie l'ecriture (exemple : prenom@famille.com)" });
+    }
     if (password.length < 8) {
       return res.status(400).json({ error: 'Le mot de passe doit contenir au moins 8 caractères' });
     }
@@ -121,6 +130,7 @@ router.post('/signup', async (req, res) => {
 
     res.status(201).json({ needsVerification: true, email });
   } catch (err) {
+    if (err.emailSend) return res.status(503).json({ error: EMAIL_SEND_ERROR });
     console.error('Signup error:', err);
     res.status(500).json({ error: 'Erreur serveur' });
   }
@@ -174,6 +184,9 @@ router.post('/resend-code', async (req, res) => {
   try {
     const { email } = req.body;
     if (!email) return res.status(400).json({ error: 'Email requis' });
+    if (!isValidEmail(email)) {
+      return res.status(400).json({ error: "Adresse email invalide : verifie l'ecriture" });
+    }
 
     const rows = await sql`SELECT id, name, email FROM users WHERE email = ${email} AND email_verified = false AND password_hash IS NOT NULL`;
     if (rows.length > 0) await sendVerificationCode(rows[0]);
@@ -181,6 +194,7 @@ router.post('/resend-code', async (req, res) => {
     // Always succeed to prevent email enumeration
     res.json({ success: true, message: 'Si un compte est en attente, un nouveau code a été envoyé.' });
   } catch (err) {
+    if (err.emailSend) return res.status(503).json({ error: EMAIL_SEND_ERROR });
     console.error('Resend code error:', err);
     res.status(500).json({ error: 'Erreur serveur' });
   }
