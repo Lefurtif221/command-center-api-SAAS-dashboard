@@ -11,7 +11,7 @@ const statsRoutes = require('./routes/stats');
 const payRoutes = require('./routes/pay');
 const feedbackRoutes = require('./routes/feedback');
 const referralRoutes = require('./routes/referral');
-const pushRoutes = require('./routes/push');
+const { router: pushRoutes } = require('./routes/push');
 const { ADMIN_EMAILS } = require('./middleware/plan');
 const sql = require('./db');
 

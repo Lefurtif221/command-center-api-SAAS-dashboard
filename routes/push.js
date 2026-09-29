@@ -1,6 +1,9 @@
+const express = require('express');
 const webPush = require('web-push');
 const { requireAuth } = require('../middleware/auth');
 const sql = require('../db');
+
+const router = express.Router();
 
 webPush.setVapidDetails(
   process.env.VAPID_SUBJECT || 'mailto:design-577906391@test.local',
@@ -42,9 +45,11 @@ function buildPayload({ title, body, url = '/dashboard', icon = '/icons/icon-192
   return { title, body, url, icon, badge, data, tag, requireInteraction };
 }
 
-module.exports = { sendPush, buildPayload, webPush };
+router.get('/vapid-public-key', (req, res) => {
+  res.json({ publicKey: process.env.VAPID_PUBLIC_KEY });
+});
 
-async function subscribeHandler(req, res) {
+router.post('/subscribe', requireAuth, async (req, res) => {
   const user = req.user;
   const { endpoint, keys } = req.body;
 
@@ -67,9 +72,9 @@ async function subscribeHandler(req, res) {
     console.error('Subscribe error:', err.message);
     res.status(500).json({ error: 'Échec enregistrement' });
   }
-}
+});
 
-async function unsubscribeHandler(req, res) {
+router.post('/unsubscribe', requireAuth, async (req, res) => {
   const user = req.user;
   const { endpoint } = req.body;
 
@@ -84,25 +89,6 @@ async function unsubscribeHandler(req, res) {
     console.error('Unsubscribe error:', err.message);
     res.status(500).json({ error: 'Échec désabonnement' });
   }
-}
+});
 
-async function getPublicKeyHandler(req, res) {
-  res.json({ publicKey: process.env.VAPID_PUBLIC_KEY });
-}
-
-module.exports = (req, res) => {
-  const method = req.method;
-  const path = req.path;
-
-  if (method === 'GET' && path === '/vapid-public-key') {
-    return getPublicKeyHandler(req, res);
-  }
-  if (method === 'POST' && path === '/subscribe') {
-    return requireAuth(req, res, () => subscribeHandler(req, res));
-  }
-  if (method === 'POST' && path === '/unsubscribe') {
-    return requireAuth(req, res, () => unsubscribeHandler(req, res));
-  }
-
-  res.status(404).json({ error: 'Route introuvable' });
-};
+module.exports = { router, sendPush, buildPayload, webPush };
