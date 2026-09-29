@@ -11,6 +11,7 @@ const statsRoutes = require('./routes/stats');
 const payRoutes = require('./routes/pay');
 const feedbackRoutes = require('./routes/feedback');
 const referralRoutes = require('./routes/referral');
+const pushRoutes = require('./routes/push');
 const { ADMIN_EMAILS } = require('./middleware/plan');
 const sql = require('./db');
 
@@ -181,7 +182,20 @@ if (sentryEnabled) {
         created_at TIMESTAMPTZ DEFAULT NOW()
       )
     `;
-    // Parrainage : lien perso avec code pour inviter des amis
+    // Push notifications
+    await sql`
+      CREATE TABLE IF NOT EXISTS push_subscriptions (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        endpoint TEXT NOT NULL,
+        p256dh TEXT NOT NULL,
+        auth TEXT NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(endpoint)
+      )
+    `;
+    await sql`CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user ON push_subscriptions(user_id)`;
     await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_code TEXT`;
     await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by UUID REFERENCES users(id) ON DELETE SET NULL`;
     await sql`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_referral_code ON users(referral_code)`;
@@ -250,6 +264,7 @@ app.use('/api/stats', statsRoutes);
 app.use('/api/pay', payRoutes);
 app.use('/api/feedback', feedbackRoutes);
 app.use('/api/me/referral', referralRoutes);
+app.use('/api/push', pushRoutes);
 
 // IP publique sortante de ce serveur (a afficher au partenaire a whitelist,
 // ex: CinetPay). Cachee 10 min pour ne pas appeler le service exterieur a chaque requete.
