@@ -196,6 +196,17 @@ if (sentryEnabled) {
       )
     `;
     await sql`CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user ON push_subscriptions(user_id)`;
+    // Dedup des notifications push (une notification par user + cle)
+    await sql`
+      CREATE TABLE IF NOT EXISTS push_notification_log (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        dedupe_key VARCHAR(255) NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(user_id, dedupe_key)
+      )
+    `;
+    await sql`CREATE INDEX IF NOT EXISTS idx_push_notification_log_created ON push_notification_log(created_at)`;
     await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_code TEXT`;
     await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by UUID REFERENCES users(id) ON DELETE SET NULL`;
     await sql`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_referral_code ON users(referral_code)`;
@@ -307,4 +318,5 @@ app.use((err, req, res, next) => {
 
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
+  require('./services/pushJobs').startPushJobs();
 });

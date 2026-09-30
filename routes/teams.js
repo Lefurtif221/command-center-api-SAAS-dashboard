@@ -476,6 +476,15 @@ router.post('/:id/messages', auth, async (req, res) => {
       RETURNING id, content, created_at
     `;
     const sender = await sql`SELECT name, initials FROM users WHERE id = ${req.userId}`;
+    // Notif push aux autres membres (fire and forget)
+    const { notifyTeamNewMessage } = require('../services/pushJobs');
+    notifyTeamNewMessage({
+      teamId: req.params.id,
+      messageId: inserted[0].id,
+      senderId: req.userId,
+      senderName: sender[0]?.name || '',
+      content,
+    });
     res.status(201).json({
       message: {
         ...inserted[0],
