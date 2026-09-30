@@ -12,9 +12,6 @@ const payRoutes = require('./routes/pay');
 const feedbackRoutes = require('./routes/feedback');
 const referralRoutes = require('./routes/referral');
 const { router: pushRoutes } = require('./routes/push');
-console.log('[DEBUG] pushRoutes type:', typeof pushRoutes, 'keys:', Object.keys(pushRoutes || {}));
-
-app.get('/api/pushtest/debug', (req, res) => res.json({ ok: true, msg: 'debug route works' }));
 const { ADMIN_EMAILS } = require('./middleware/plan');
 const sql = require('./db');
 
@@ -267,7 +264,6 @@ app.use('/api/stats', statsRoutes);
 app.use('/api/pay', payRoutes);
 app.use('/api/feedback', feedbackRoutes);
 app.use('/api/me/referral', referralRoutes);
-app.get('/api/push/test', (req, res) => res.json({ ok: true, msg: 'push mount works' }));
 app.use('/api/push', pushRoutes);
 
 // IP publique sortante de ce serveur (a afficher au partenaire a whitelist,
@@ -311,5 +307,4 @@ app.use((err, req, res, next) => {
 
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
-});/ /   f o r c e   r e b u i l d  
- 
+});
