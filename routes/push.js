@@ -6,9 +6,18 @@ const sql = require('../db');
 const router = express.Router();
 
 const VAPID_CONFIGURED = !!(process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY);
+
+// Apple refuse les subjects localhost/.local (erreur BadJwtToken) : on fallback sur un domaine reel
+function vapidSubject() {
+  const s = process.env.VAPID_SUBJECT || '';
+  if (!s) return 'mailto:design-577906391@gmail.com';
+  if (/\.local\b|localhost/i.test(s)) return 'mailto:design-577906391@gmail.com';
+  return s;
+}
+
 if (VAPID_CONFIGURED) {
   webPush.setVapidDetails(
-    process.env.VAPID_SUBJECT || 'mailto:design-577906391@test.local',
+    vapidSubject(),
     process.env.VAPID_PUBLIC_KEY,
     process.env.VAPID_PRIVATE_KEY
   );
