@@ -12,6 +12,7 @@ const payRoutes = require('./routes/pay');
 const feedbackRoutes = require('./routes/feedback');
 const referralRoutes = require('./routes/referral');
 const { router: pushRoutes } = require('./routes/push');
+console.log('[DEBUG] pushRoutes type:', typeof pushRoutes, 'keys:', Object.keys(pushRoutes || {}));
 const { ADMIN_EMAILS } = require('./middleware/plan');
 const sql = require('./db');
 
