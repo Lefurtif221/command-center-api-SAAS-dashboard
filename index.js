@@ -14,7 +14,7 @@ const referralRoutes = require('./routes/referral');
 const { router: pushRoutes } = require('./routes/push');
 console.log('[DEBUG] pushRoutes type:', typeof pushRoutes, 'keys:', Object.keys(pushRoutes || {}));
 
-app.get('/api/push/debug', (req, res) => res.json({ ok: true, msg: 'debug route works' }));
+app.get('/api/pushtest/debug', (req, res) => res.json({ ok: true, msg: 'debug route works' }));
 const { ADMIN_EMAILS } = require('./middleware/plan');
 const sql = require('./db');
 
