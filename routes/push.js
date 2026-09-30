@@ -90,6 +90,55 @@ router.post('/subscribe', auth, async (req, res) => {
   }
 });
 
+// Test utilisateur : envoie une notif de diagnostic sur tous les appareils abonnes
+// et renvoie le resultat par appareil (pour savoir si le blocage est cote Apple/Google
+// ou cote affichage sur l'appareil)
+router.post('/test', auth, async (req, res) => {
+  if (!VAPID_CONFIGURED) {
+    return res.status(503).json({ error: 'Push non configuré (VAPID manquant)' });
+  }
+  const userId = req.userId;
+  try {
+    const rows = await sql`
+      SELECT endpoint, p256dh, auth
+      FROM push_subscriptions
+      WHERE user_id = ${userId}
+    `;
+    if (rows.length === 0) {
+      return res.json({ devices: 0, results: [], hint: 'Aucun appareil abonné — active les notifications sur cet appareil' });
+    }
+
+    const payload = JSON.stringify(buildPayload({
+      title: 'Test Personal Place',
+      body: 'Si tu vois cette notification, les push fonctionnent sur cet appareil.',
+      url: '/dashboard',
+      tag: 'push-test',
+      requireInteraction: true,
+    }));
+
+    const results = await Promise.all(rows.map(async (sub) => {
+      let host = '';
+      try { host = new URL(sub.endpoint).host; } catch { host = 'endpoint invalide'; }
+      try {
+        await webPush.sendNotification({ endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } }, payload);
+        return { host, ok: true };
+      } catch (err) {
+        if (err.statusCode === 410 || err.statusCode === 404) {
+          await sql`DELETE FROM push_subscriptions WHERE endpoint = ${sub.endpoint}`;
+          return { host, ok: false, error: 'abonnement expiré (supprimé)', status: err.statusCode };
+        }
+        console.error('Push test error:', host, err.statusCode || '', err.message);
+        return { host, ok: false, error: err.message, status: err.statusCode || null };
+      }
+    }));
+
+    res.json({ devices: rows.length, results });
+  } catch (err) {
+    console.error('Push test error:', err.message);
+    res.status(500).json({ error: 'Échec du test' });
+  }
+});
+
 router.post('/unsubscribe', auth, async (req, res) => {
   const userId = req.userId;
   const { endpoint } = req.body;
