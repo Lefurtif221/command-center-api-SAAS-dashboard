@@ -747,6 +747,22 @@ test('parrainage : code, attach une fois, refus des cas invalides', async () => 
   assert.strictEqual(self.data.attached, false);
 });
 
+test('push: /api/push/test refuse sans token, repond pour un utilisateur sans abonnement', async () => {
+  const email = `smoke-push-${uniq()}@test.local`;
+  const signup = await signupUser('Push User', email);
+  ids.push(signup.data.user.id);
+  const token = signup.data.token;
+
+  const anon = await api('/api/push/test', { method: 'POST' });
+  assert.strictEqual(anon.status, 401);
+
+  const noSub = await api('/api/push/test', { method: 'POST', token });
+  assert.strictEqual(noSub.status, 200);
+  assert.strictEqual(noSub.data.devices, 0);
+  assert.deepStrictEqual(noSub.data.results, []);
+  assert.ok(noSub.data.hint);
+});
+
 test('nettoyage des comptes de test', async () => {
   const sql = require(path.join(__dirname, '..', 'db'));
   for (const id of ids) {
