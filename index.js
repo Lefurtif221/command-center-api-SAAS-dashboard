@@ -265,6 +265,7 @@ app.use('/api/pay', payRoutes);
 app.use('/api/feedback', feedbackRoutes);
 app.use('/api/me/referral', referralRoutes);
 app.use('/api/push', pushRoutes);
+app.get('/api/push/test', (req, res) => res.json({ ok: true, msg: 'push mount works' }));
 
 // IP publique sortante de ce serveur (a afficher au partenaire a whitelist,
 // ex: CinetPay). Cachee 10 min pour ne pas appeler le service exterieur a chaque requete.
