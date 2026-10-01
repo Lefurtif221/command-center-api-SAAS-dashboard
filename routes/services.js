@@ -1,6 +1,7 @@
 const express = require('express');
 const sql = require('../db');
 const { auth } = require('../middleware/auth');
+const { getGmailAccounts, gmailTokenFor, refreshGmailToken, parseEmailRules, evaluateEmail } = require('../lib/gmail');
 
 const router = express.Router();
 
@@ -44,26 +45,7 @@ const SERVICE_CONFIGS = {
   },
 };
 
-// --- Helpers multi-comptes Gmail ---
-
-// All Gmail accounts of a user (one row per Gmail address)
-async function getGmailAccounts(userId) {
-  return await sql`
-    SELECT id, user_id, account_key, account_email, access_token, refresh_token, token_expires_at
-    FROM connected_services
-    WHERE user_id = ${userId} AND service_name = 'gmail'
-    ORDER BY created_at ASC
-  `;
-}
-
-// Return a valid access token for a stored account row (refreshes if needed)
-async function gmailTokenFor(account) {
-  const expiresAt = account.token_expires_at ? new Date(account.token_expires_at).getTime() : 0;
-  if (expiresAt && expiresAt - Date.now() < 5 * 60 * 1000 && account.refresh_token) {
-    return await refreshGmailToken(account.user_id, account.refresh_token, account.account_key);
-  }
-  return account.access_token;
-}
+// Helpers multi-comptes Gmail : voir lib/gmail.js (partage avec pushJobs)
 
 // Generate OAuth URL for a service
 router.get('/:service/authorize', auth, (req, res) => {
@@ -273,29 +255,6 @@ router.delete('/:service', auth, async (req, res) => {
 });
 
 // Auto-refresh Gmail token if expired
-async function refreshGmailToken(userId, refreshToken, accountKey = 'default') {
-  const response = await fetch('https://oauth2.googleapis.com/token', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      client_id: process.env.GOOGLE_CLIENT_ID,
-      client_secret: process.env.GOOGLE_CLIENT_SECRET,
-      refresh_token: refreshToken,
-      grant_type: 'refresh_token',
-    }),
-  });
-  const data = await response.json();
-  if (data.error) throw new Error(data.error_description || data.error);
-
-  const newToken = data.access_token;
-  const expiresAt = new Date(Date.now() + data.expires_in * 1000);
-  await sql`
-    UPDATE connected_services SET access_token = ${newToken}, token_expires_at = ${expiresAt}
-    WHERE user_id = ${userId} AND service_name = 'gmail' AND account_key = ${accountKey}
-  `;
-  return newToken;
-}
-
 // Fetch emails from Gmail (merged across all connected accounts)
 router.get('/gmail/emails', auth, async (req, res) => {
   try {
@@ -303,13 +262,7 @@ router.get('/gmail/emails', auth, async (req, res) => {
     if (accounts.length === 0) return res.status(400).json({ error: 'Gmail non connecté' });
 
     // Fetch user rules
-    const rules = await sql`SELECT sender, keyword, priority FROM email_rules WHERE user_id = ${req.userId}`;
-    const senderRules = {};
-    const keywordRules = [];
-    for (const r of rules) {
-      if (r.sender) senderRules[r.sender.toLowerCase()] = r.priority;
-      if (r.keyword) keywordRules.push({ keyword: r.keyword.toLowerCase(), priority: r.priority });
-    }
+    const rules = parseEmailRules(await sql`SELECT sender, keyword, priority FROM email_rules WHERE user_id = ${req.userId}`);
 
     const emails = [];
     const failedAccounts = [];
@@ -360,29 +313,14 @@ router.get('/gmail/emails', auth, async (req, res) => {
       const date = headers.find(h => h.name === 'Date')?.value || '';
       const isUnread = msgData.labelIds?.includes('UNREAD');
 
-      // Extract sender email for rule matching
-      const emailMatch = from.match(/<(.+?)>/);
-      const senderEmail = emailMatch ? emailMatch[1] : from;
-      const senderName = from.split('<')[0].trim();
-
-      // Apply rules: check sender, then domain, then keywords
-      let priority = isUnread ? 'high' : 'low';
-      if (senderRules[senderEmail.toLowerCase()]) {
-        priority = senderRules[senderEmail.toLowerCase()];
-      } else {
-        const domain = senderEmail.split('@')[1];
-        if (senderRules['@' + domain]) {
-          priority = senderRules['@' + domain];
-        }
-      }
-      // Check keywords in subject + preview
-      const textToCheck = (subject + ' ' + (msgData.snippet || '')).toLowerCase();
-      for (const kr of keywordRules) {
-        if (textToCheck.includes(kr.keyword)) {
-          priority = kr.priority;
-          break;
-        }
-      }
+      // Priorite : non lu par defaut, puis regles sender/domaine/mots-cles
+      const evaluated = evaluateEmail(rules, {
+        from,
+        subject,
+        snippet: msgData.snippet || '',
+        isUnread,
+      });
+      const { priority, senderEmail, senderName } = evaluated;
 
       emails.push({
         id: msg.id,
