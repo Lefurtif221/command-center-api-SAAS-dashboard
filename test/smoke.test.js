@@ -65,7 +65,7 @@ async function waitForHealth(timeoutMs = 30000) {
 before(async () => {
   child = spawn(process.execPath, ['index.js'], {
     cwd: path.join(__dirname, '..'),
-    env: { ...process.env, PORT: String(PORT), ADMIN_EMAILS: 'smoke-admin@test.local' },
+    env: { ...process.env, PORT: String(PORT), ADMIN_EMAILS: 'smoke-admin@test.local', THANK_YOU_EMAILS: 'smoke-thankyou@test.local' },
     stdio: 'ignore',
   });
   await waitForHealth();
@@ -840,6 +840,32 @@ test('push: invitations equipe — claims invite et invite-accepted', async () =
 
   const delTeam = await api(`/api/teams/${teamId}`, { method: 'DELETE', token: owner.data.token });
   assert.strictEqual(delTeam.status, 200);
+});
+
+test('soutien : compte remercié = Entreprise + affiche, quotas ouverts sans paiement', async () => {
+  const email = 'smoke-thankyou@test.local';
+  const u = await signupUser('Merci Soutien', email);
+  ids.push(u.data.user.id);
+
+  // Formule + affiche des le signup (compte qui n'existait pas avant)
+  assert.strictEqual(u.data.user.plan, 'entreprise');
+  assert.ok(u.data.user.thank_you, 'la note de remerciement doit etre renvoyee');
+  assert.ok(/merci/i.test(u.data.user.thank_you));
+
+  const me = await api('/api/auth/me', { token: u.data.token });
+  assert.strictEqual(me.data.user.plan, 'entreprise');
+  assert.ok(me.data.user.thank_you);
+
+  // Quotas Entreprise : 2 equipes alors que le gratuit n'autorise qu'une seule equipe
+  const t1 = await api('/api/teams', { method: 'POST', token: u.data.token, body: { name: 'Merci 1' } });
+  assert.strictEqual(t1.status, 201);
+  const t2 = await api('/api/teams', { method: 'POST', token: u.data.token, body: { name: 'Merci 2' } });
+  assert.strictEqual(t2.status, 201);
+
+  for (const t of [t1, t2]) {
+    const del = await api(`/api/teams/${t.data.team.id}`, { method: 'DELETE', token: u.data.token });
+    assert.strictEqual(del.status, 200);
+  }
 });
 
 test('nettoyage des comptes de test', async () => {

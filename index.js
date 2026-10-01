@@ -12,7 +12,7 @@ const payRoutes = require('./routes/pay');
 const feedbackRoutes = require('./routes/feedback');
 const referralRoutes = require('./routes/referral');
 const { router: pushRoutes } = require('./routes/push');
-const { ADMIN_EMAILS } = require('./middleware/plan');
+const { ADMIN_EMAILS, THANK_YOU_EMAILS } = require('./middleware/plan');
 const sql = require('./db');
 
 const app = express();
@@ -220,6 +220,10 @@ if (sentryEnabled) {
     `;
     // Comptes proprietaire : formule Entreprise permanente
     for (const email of ADMIN_EMAILS) {
+      await sql`UPDATE users SET plan = 'entreprise' WHERE lower(email) = ${email}`;
+    }
+    // Soutiens (ami ayant aide pour le domaine) : Entreprise permanente
+    for (const email of THANK_YOU_EMAILS) {
       await sql`UPDATE users SET plan = 'entreprise' WHERE lower(email) = ${email}`;
     }
     console.log('Migration: schema ensured');

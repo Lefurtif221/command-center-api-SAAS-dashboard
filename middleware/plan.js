@@ -29,22 +29,39 @@ function isAdminEmail(email) {
   return !!email && ADMIN_EMAILS.includes(String(email).trim().toLowerCase());
 }
 
-// Formule renvoyee au client : les comptes proprietaire sont toujours en Entreprise
+// Amis soutiens : formule Entreprise offerte + affiche de remerciement dans l'app.
+// Se surcharge avec la variable d'env THANK_YOU_EMAILS (separee par des virgules).
+const THANK_YOU_EMAILS = (process.env.THANK_YOU_EMAILS || 'elmansene@gmail.com')
+  .split(',')
+  .map((s) => s.trim().toLowerCase())
+  .filter(Boolean);
+
+const THANK_YOU_NOTE = "Merci pour ton soutien ! Ton aide pour l'achat du domaine personal-place.tech a fait grandir Personal Place : voici la formule Entreprise, avec plaisir.";
+
+function isThankYouEmail(email) {
+  return !!email && THANK_YOU_EMAILS.includes(String(email).trim().toLowerCase());
+}
+
+// Formule renvoyee au client : comptes proprietaire et soutiens = Entreprise
 function publicUser(user) {
-  if (user && isAdminEmail(user.email)) return { ...user, plan: 'entreprise' };
-  return user;
+  if (!user) return user;
+  let out = user;
+  if (isAdminEmail(user.email)) out = { ...out, plan: 'entreprise' };
+  if (isThankYouEmail(user.email)) out = { ...out, plan: 'entreprise', thank_you: THANK_YOU_NOTE };
+  return out;
 }
 
 async function getPlan(userId) {
   const rows = await sql`SELECT plan, email FROM users WHERE id = ${userId}`;
   const row = rows[0];
   const admin = isAdminEmail(row && row.email);
+  const grant = isThankYouEmail(row && row.email);
   const stored = row && PLAN_RANK[row.plan] !== undefined ? row.plan : 'free';
-  let plan = admin ? 'entreprise' : stored;
+  let plan = admin || grant ? 'entreprise' : stored;
 
   // Un compte passe en Pro/Entreprise par paiement : l'abonnement doit encore etre valide.
   // Sans aucun abonnement (grant manuel), on garde le plan en l'etat.
-  if (!admin && isPaidPlan(plan)) {
+  if (!admin && !grant && isPaidPlan(plan)) {
     const subs = await sql`SELECT 1 FROM subscriptions WHERE user_id = ${userId} LIMIT 1`;
     if (subs.length > 0) {
       const active = await sql`
@@ -83,4 +100,4 @@ function requirePlan(required = 'pro') {
   };
 }
 
-module.exports = { getPlan, requirePlan, PLANS, PLAN_RANK, planRank, isPaidPlan, isAdminEmail, publicUser, ADMIN_EMAILS };
+module.exports = { getPlan, requirePlan, PLANS, PLAN_RANK, planRank, isPaidPlan, isAdminEmail, publicUser, ADMIN_EMAILS, THANK_YOU_EMAILS, THANK_YOU_NOTE };
