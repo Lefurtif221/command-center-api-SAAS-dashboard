@@ -4,6 +4,8 @@ const { Resend } = require('resend');
 const sql = require('../db');
 const { auth } = require('../middleware/auth');
 const { getPlan } = require('../middleware/plan');
+const { notifyUser } = require('../services/pushJobs');
+const { buildPayload } = require('./push');
 
 const router = express.Router();
 
@@ -237,9 +239,19 @@ router.post('/:id/invitations', auth, async (req, res) => {
     `;
 
     const inviteUrl = `${FRONTEND_URL}/team/invite?token=${token}`;
+    const inviter = await sql`SELECT name FROM users WHERE id = ${req.userId}`;
+
+    // Notif push a l'utilisateur invite (s'il a un compte deja abonne au push)
+    if (target.length > 0 && target[0].id !== req.userId) {
+      await notifyUser(target[0].id, `invite:${token}`, buildPayload({
+        title: 'Invitation d\'équipe',
+        body: `${inviter[0]?.name || 'Quelqu un'} vous invite à rejoindre « ${membership.name} »`,
+        url: `/team/invite?token=${token}`,
+        tag: `invite-${token}`,
+      }));
+    }
 
     if (resend) {
-      const inviter = await sql`SELECT name FROM users WHERE id = ${req.userId}`;
       try {
         const { error } = await resend.emails.send({
           from: 'Personal Place <onboarding@resend.dev>',
@@ -310,7 +322,7 @@ router.get('/invitations/:token', auth, async (req, res) => {
 router.post('/invitations/:token/accept', auth, async (req, res) => {
   try {
     const rows = await sql`
-      SELECT i.id, i.email, i.role, i.status, i.expires_at, i.team_id, t.name AS team_name
+      SELECT i.id, i.email, i.role, i.status, i.expires_at, i.team_id, i.invited_by, t.name AS team_name
       FROM team_invitations i JOIN teams t ON t.id = i.team_id
       WHERE i.token = ${req.params.token}
     `;
@@ -319,7 +331,7 @@ router.post('/invitations/:token/accept', auth, async (req, res) => {
     if (inv.status !== 'pending') return res.status(400).json({ error: 'Cette invitation n\'est plus valide' });
     if (new Date(inv.expires_at) < new Date()) return res.status(400).json({ error: 'Invitation expirée' });
 
-    const me = await sql`SELECT email FROM users WHERE id = ${req.userId}`;
+    const me = await sql`SELECT email, name FROM users WHERE id = ${req.userId}`;
     if (me[0].email.toLowerCase() !== inv.email.toLowerCase()) {
       return res.status(403).json({ error: 'Cette invitation est adressée à ' + inv.email });
     }
@@ -339,6 +351,16 @@ router.post('/invitations/:token/accept', auth, async (req, res) => {
       ON CONFLICT (team_id, user_id) DO UPDATE SET role = EXCLUDED.role
     `;
     await sql`UPDATE team_invitations SET status = 'accepted' WHERE id = ${inv.id}`;
+
+    // Notif push a l'inviteur : « X a rejoint l'equipe »
+    if (inv.invited_by && inv.invited_by !== req.userId) {
+      await notifyUser(inv.invited_by, `invite-accepted:${inv.id}`, buildPayload({
+        title: 'Invitation acceptée',
+        body: `${me[0]?.name || 'Un membre'} a rejoint « ${inv.team_name} »`,
+        url: '/dashboard',
+        tag: 'invite-accepted',
+      }));
+    }
 
     res.json({ team: { id: inv.team_id, name: inv.team_name }, role: inv.role });
   } catch (err) {

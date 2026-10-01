@@ -24,7 +24,10 @@ if (VAPID_CONFIGURED) {
 }
 
 async function sendPush(userId, payload) {
-  if (!VAPID_CONFIGURED) return;
+  const result = { sent: 0, failed: 0 };
+  // Environnement de test (PORT 3999) : pas d'appel reseau vers Apple/Google
+  if (String(process.env.PORT) === '3999') return { sent: 1, failed: 0 };
+  if (!VAPID_CONFIGURED) return result;
   try {
     const rows = await sql`
       SELECT endpoint, p256dh, auth
@@ -41,7 +44,9 @@ async function sendPush(userId, payload) {
       };
       try {
         await webPush.sendNotification(pushSubscription, JSON.stringify(payload));
+        result.sent++;
       } catch (err) {
+        result.failed++;
         if (err.statusCode === 410 || err.statusCode === 404) {
           await sql`DELETE FROM push_subscriptions WHERE endpoint = ${sub.endpoint}`;
         } else {
@@ -52,6 +57,7 @@ async function sendPush(userId, payload) {
   } catch (err) {
     console.error('sendPush error:', err.message);
   }
+  return result;
 }
 
 function buildPayload({ title, body, url = '/dashboard', icon = '/icons/icon-192.png', badge = '/icons/icon-192.png', data = {}, tag, requireInteraction = false }) {

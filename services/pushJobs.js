@@ -1,10 +1,13 @@
 const sql = require('../db');
 const { sendPush, buildPayload } = require('../routes/push');
+const { getGmailAccounts, gmailTokenFor, refreshGmailToken, parseEmailRules, evaluateEmail } = require('../lib/gmail');
 
 const VAPID_OK = !!(process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY);
 const TICK_MS = 60 * 1000;
 const REMIND_BEFORE_MS = 15 * 60 * 1000;
-const DIGEST_UTC_HOURS = [6, 7, 8, 9]; // fenêtre matin (UTC) pour le rappel "tâches du jour"
+const DIGEST_UTC_HOURS = [6, 7, 8, 9]; // fenetre matin (UTC) pour le rappel "taches du jour"
+const EMAIL_POLL_TICKS = 5; // sondage Gmail (emails importants) toutes les 5 minutes
+const EMAIL_WINDOW_MS = 15 * 60 * 1000; // ne notifier que les emails recus dans les 15 dernieres minutes
 
 const utcToday = () => new Date().toISOString().slice(0, 10);
 
@@ -30,7 +33,14 @@ async function notify(userId, key, payload) {
   try {
     if (!(await hasSubscription(userId))) return false;
     if (!(await claim(userId, key))) return false;
-    await sendPush(userId, payload);
+    const res = await sendPush(userId, payload);
+    if (res && res.sent === 0) {
+      // Aucun envoi reussi : liberer la cle pour qu'une nouvelle tentative soit possible
+      await sql`
+        DELETE FROM push_notification_log WHERE user_id = ${userId} AND dedupe_key = ${key}
+      `;
+      return false;
+    }
     return true;
   } catch (err) {
     console.error('notify error:', err.message);
@@ -133,12 +143,100 @@ async function notifyTeamNewMessage({ teamId, messageId, senderId, senderName, c
   }
 }
 
+// 5. Emails importants : sondage Gmail toutes les EMAIL_POLL_TICKS minutes
+//    (utilisateurs abonnes au push ET Gmail connecte) — dedup par id Gmail
+async function checkImportantEmails() {
+  const users = await sql`
+    SELECT DISTINCT ps.user_id
+    FROM push_subscriptions ps
+    JOIN connected_services cs ON cs.user_id = ps.user_id AND cs.service_name = 'gmail'
+  `;
+  for (const u of users) {
+    try {
+      await checkUserEmails(u.user_id);
+    } catch (err) {
+      console.error('checkImportantEmails error:', err.message);
+    }
+  }
+}
+
+async function checkUserEmails(userId) {
+  const accounts = await getGmailAccounts(userId);
+  if (accounts.length === 0) return;
+  const rules = parseEmailRules(await sql`SELECT sender, keyword, priority FROM email_rules WHERE user_id = ${userId}`);
+  const windowStart = Date.now() - EMAIL_WINDOW_MS;
+  const listUrl = `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=10&q=${encodeURIComponent('is:unread')}`;
+
+  for (const account of accounts) {
+    let token;
+    try {
+      token = await gmailTokenFor(account);
+    } catch (err) {
+      console.error('Gmail token error:', err.message);
+      continue;
+    }
+
+    let data = await (await fetch(listUrl, { headers: { Authorization: `Bearer ${token}` } })).json();
+    if (data.error && data.error.code === 401 && account.refresh_token) {
+      try {
+        token = await refreshGmailToken(userId, account.refresh_token, account.account_key);
+        data = await (await fetch(listUrl, { headers: { Authorization: `Bearer ${token}` } })).json();
+      } catch (err) {
+        console.error('Gmail refresh error:', err.message);
+        continue;
+      }
+    }
+    if (data.error) {
+      console.error('Gmail list error:', data.error.message);
+      continue;
+    }
+
+    for (const msg of (data.messages || []).slice(0, 10)) {
+      try {
+        const detail = await (await fetch(
+          `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        )).json();
+        if (detail.error) continue;
+        const receivedAt = Number(detail.internalDate || 0);
+        if (!receivedAt || receivedAt < windowStart) continue; // pas de rappel d'anciens emails
+        if (!detail.labelIds || !detail.labelIds.includes('UNREAD')) continue;
+
+        const headers = detail.payload?.headers || [];
+        const from = headers.find(h => h.name === 'From')?.value || '';
+        const subject = headers.find(h => h.name === 'Subject')?.value || '(sans objet)';
+        const { priority, senderName, senderEmail } = evaluateEmail(rules, {
+          from,
+          subject,
+          snippet: detail.snippet || '',
+          isUnread: true,
+        });
+        if (priority !== 'high') continue;
+
+        const who = senderName && senderName !== senderEmail ? `${senderName} — ` : '';
+        await notify(userId, `email:${msg.id}`, buildPayload({
+          title: 'Nouvel email important',
+          body: `${who}${subject}`.slice(0, 140),
+          url: '/dashboard',
+          tag: `email-${msg.id}`,
+        }));
+      } catch (err) {
+        console.error('Gmail message error:', err.message);
+      }
+    }
+  }
+}
+
+let tickCount = 0;
+
 async function tick() {
   if (!VAPID_OK) return;
   try {
     await checkOverdueTasks();
     await checkDailyDigest();
     await checkCalendarReminders();
+    tickCount++;
+    if (tickCount % EMAIL_POLL_TICKS === 0) await checkImportantEmails();
   } catch (err) {
     console.error('pushJobs tick error:', err.message);
   }
@@ -160,4 +258,4 @@ function startPushJobs() {
   console.log('pushJobs: actif (tick 60s)');
 }
 
-module.exports = { startPushJobs, notifyTeamNewMessage };
+module.exports = { startPushJobs, notifyTeamNewMessage, notifyUser: notify };

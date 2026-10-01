@@ -763,6 +763,85 @@ test('push: /api/push/test refuse sans token, repond pour un utilisateur sans ab
   assert.ok(noSub.data.hint);
 });
 
+test('push: regles email — priorite sender, domaine, mot-cle', () => {
+  const { parseEmailRules, evaluateEmail } = require(path.join(__dirname, '..', 'lib', 'gmail'));
+  const rules = parseEmailRules([
+    { sender: 'patron@entreprise.com', keyword: null, priority: 'high' },
+    { sender: '@spamsite.com', keyword: null, priority: 'low' },
+    { sender: null, keyword: 'facture', priority: 'high' },
+  ]);
+
+  // Non lu = high par defaut
+  assert.strictEqual(evaluateEmail(rules, { from: 'ami@free.fr', subject: 'Salut', isUnread: true }).priority, 'high');
+  // Lu = low par defaut
+  assert.strictEqual(evaluateEmail(rules, { from: 'ami@free.fr', subject: 'Salut', isUnread: false }).priority, 'low');
+  // Sender exact prioritaire (meme lu)
+  assert.strictEqual(evaluateEmail(rules, { from: 'patron@entreprise.com', subject: 'Bonjour', isUnread: false }).priority, 'high');
+  // Regle de domaine prioritaire (meme non lu)
+  assert.strictEqual(evaluateEmail(rules, { from: 'promo@spamsite.com', subject: 'Offre', isUnread: true }).priority, 'low');
+  // Mot-cle dans l'objet
+  assert.strictEqual(evaluateEmail(rules, { from: 'ami@free.fr', subject: 'Ta facture du mois', isUnread: false }).priority, 'high');
+  // Format "Nom <mail>"
+  const parsed = evaluateEmail(rules, { from: 'Patron <patron@entreprise.com>', subject: 'x', isUnread: true });
+  assert.strictEqual(parsed.senderEmail, 'patron@entreprise.com');
+  assert.strictEqual(parsed.senderName, 'Patron');
+});
+
+test('push: invitations equipe — claims invite et invite-accepted', async () => {
+  const ownerEmail = `smoke-invowner-${uniq()}@test.local`;
+  const guestEmail = `smoke-invguest-${uniq()}@test.local`;
+  const owner = await signupUser('Inv Owner', ownerEmail);
+  ids.push(owner.data.user.id);
+  const guest = await signupUser('Inv Guest', guestEmail);
+  ids.push(guest.data.user.id);
+
+  // Abonnements push factices (sendPush est simule en PORT 3999)
+  for (const email of [ownerEmail, guestEmail]) {
+    await sql`
+      INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth)
+      SELECT id, 'https://push.test/' || id, 'p256', 'auth' FROM users WHERE email = ${email}
+    `;
+  }
+
+  const createTeam = await api('/api/teams', { method: 'POST', token: owner.data.token, body: { name: 'Equipe Inv Push' } });
+  assert.strictEqual(createTeam.status, 201);
+  const teamId = createTeam.data.team.id;
+
+  const invite = await api(`/api/teams/${teamId}/invitations`, {
+    method: 'POST',
+    token: owner.data.token,
+    body: { email: guestEmail, role: 'member' },
+  });
+  assert.strictEqual(invite.status, 201);
+  const tokenInvite = invite.data.inviteUrl.split('token=')[1];
+
+  const inviteClaims = await sql`
+    SELECT l.dedupe_key, u.email FROM push_notification_log l
+    JOIN users u ON u.id = l.user_id
+    WHERE l.dedupe_key = ${'invite:' + tokenInvite}
+  `;
+  assert.strictEqual(inviteClaims.length, 1, 'claim invite cree pour l invite');
+  assert.strictEqual(inviteClaims[0].email, guestEmail);
+
+  const accept = await api(`/api/teams/invitations/${tokenInvite}/accept`, {
+    method: 'POST',
+    token: guest.data.token,
+  });
+  assert.strictEqual(accept.status, 200);
+
+  const invRow = await sql`SELECT id FROM team_invitations WHERE token = ${tokenInvite}`;
+  const acceptClaims = await sql`
+    SELECT l.dedupe_key, u.email FROM push_notification_log l
+    JOIN users u ON u.id = l.user_id
+    WHERE l.dedupe_key = ${'invite-accepted:' + invRow[0].id}
+  `;
+  assert.strictEqual(acceptClaims.length, 1, 'claim invite-accepted cree pour l inviteur');
+  assert.strictEqual(acceptClaims[0].email, ownerEmail);
+
+  const delTeam = await api(`/api/teams/${teamId}`, { method: 'DELETE', token: owner.data.token });
+  assert.strictEqual(delTeam.status, 200);
+});
+
 test('nettoyage des comptes de test', async () => {
   const sql = require(path.join(__dirname, '..', 'db'));
   for (const id of ids) {
