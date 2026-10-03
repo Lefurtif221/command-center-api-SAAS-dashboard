@@ -57,7 +57,7 @@ router.get('/:service/authorize', auth, (req, res) => {
   const state = JSON.stringify({ userId: req.userId, service });
 
   if (service === 'gmail') {
-    const url = `${config.authUrl}?client_id=${config.clientId}&redirect_uri=${encodeURIComponent(FRONTEND_URL + '/auth/callback/' + service)}&response_type=code&scope=${encodeURIComponent(config.scopes.join(' '))}&state=${encodeURIComponent(state)}&access_type=offline&prompt=consent`;
+    const url = `${config.authUrl}?client_id=${config.clientId}&redirect_uri=${encodeURIComponent(FRONTEND_URL + '/auth/callback/' + service)}&response_type=code&scope=${encodeURIComponent(config.scopes.join(' '))}&state=${encodeURIComponent(state)}&access_type=offline&prompt=consent select_account`;
     return res.json({ url });
   }
 

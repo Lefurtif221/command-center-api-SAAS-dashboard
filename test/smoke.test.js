@@ -706,6 +706,76 @@ test('retours : enregistrement valide, validations refusees', async () => {
   assert.strictEqual(long.status, 400);
 });
 
+test('retours admin : liste admin=200, non-admin=403, /me expose admin', async () => {
+  const email = `smoke-fb2-${uniq()}@test.local`;
+  const signup = await signupUser('No Admin', email);
+  ids.push(signup.data.user.id);
+  const message = `retour-${uniq()}`;
+
+  const created = await api('/api/feedback', { method: 'POST', token: signup.data.token, body: { category: 'idea', message } });
+  assert.strictEqual(created.status, 201);
+
+  const denied = await api('/api/feedback', { token: signup.data.token });
+  assert.strictEqual(denied.status, 403);
+
+  const adminEmail = 'smoke-admin@test.local';
+  let adminToken;
+  try {
+    const admin = await signupUser('Admin Test', adminEmail);
+    adminToken = admin.data.token;
+    ids.push(admin.data.user.id);
+  } catch {
+    const login = await api('/api/auth/login', { method: 'POST', body: { email: adminEmail, password: 'password123' } });
+    assert.strictEqual(login.status, 200);
+    adminToken = login.data.token;
+  }
+
+  const me = await api('/api/auth/me', { token: adminToken });
+  assert.strictEqual(me.data.user.admin, true);
+
+  const list = await api('/api/feedback', { token: adminToken });
+  assert.strictEqual(list.status, 200);
+  assert.ok(Array.isArray(list.data.feedbacks));
+  assert.ok(list.data.feedbacks.some(f => f.message === message), 'le retour cree doit figurer dans la liste');
+});
+
+test('taches : due_date en AAAA-MM-JJ et remind_time HH:MM', async () => {
+  const email = `smoke-task2-${uniq()}@test.local`;
+  const signup = await signupUser('Task Date', email);
+  ids.push(signup.data.user.id);
+  const token = signup.data.token;
+
+  const created = await api('/api/tasks', {
+    method: 'POST', token,
+    body: { title: 'Avec date', due_date: '2026-10-10', remind_time: '15:30' },
+  });
+  assert.strictEqual(created.status, 201);
+  assert.match(created.data.task.due_date, /^\d{4}-\d{2}-\d{2}$/);
+  assert.strictEqual(created.data.task.due_date, '2026-10-10');
+  assert.strictEqual(created.data.task.remind_time, '15:30');
+
+  const list = await api('/api/tasks', { token });
+  const found = list.data.tasks.find(t => t.id === created.data.task.id);
+  assert.ok(found, 'tache presente dans la liste');
+  assert.strictEqual(found.due_date, '2026-10-10');
+  assert.strictEqual(found.remind_time, '15:30');
+
+  const upd = await api(`/api/tasks/${found.id}`, { method: 'PUT', token, body: { remind_time: '08:05' } });
+  assert.strictEqual(upd.status, 200);
+  assert.strictEqual(upd.data.task.remind_time, '08:05');
+  assert.strictEqual(upd.data.task.due_date, '2026-10-10');
+
+  const badDate = await api('/api/tasks', { method: 'POST', token, body: { title: 'Bad', due_date: '10/10/2026' } });
+  assert.strictEqual(badDate.status, 400);
+
+  const badTime = await api('/api/tasks', { method: 'POST', token, body: { title: 'Bad', remind_time: '25h99' } });
+  assert.strictEqual(badTime.status, 400);
+
+  const upd2 = await api(`/api/tasks/${found.id}`, { method: 'PUT', token, body: { remind_time: null } });
+  assert.strictEqual(upd2.status, 200);
+  assert.strictEqual(upd2.data.task.remind_time, null);
+});
+
 test('parrainage : code, attach une fois, refus des cas invalides', async () => {
   const parrainEmail = `smoke-ref-p-${uniq()}@test.local`;
   const parrain = await signupUser('Parrain Test', parrainEmail);

@@ -12,5 +12,7 @@ services:
         generateValue: true
       - key: FRONTEND_URL
         sync: false
+      - key: API_URL
+        sync: false
       - key: NODE_ENV
         value: production

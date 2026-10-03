@@ -1,10 +1,31 @@
 const express = require('express');
 const sql = require('../db');
 const { auth } = require('../middleware/auth');
+const { getPlan } = require('../middleware/plan');
 
 const router = express.Router();
 
 const CATEGORIES = ['idea', 'bug', 'other'];
+
+// Liste des retours utilisateurs - comptes administrateur uniquement
+router.get('/', auth, async (req, res) => {
+  try {
+    const plan = await getPlan(req.userId);
+    if (!plan.admin) return res.status(403).json({ error: 'Accès réservé aux administrateurs' });
+    const feedbacks = await sql`
+      SELECT f.id, f.category, f.message, f.page, f.created_at,
+             u.email, u.name
+      FROM feedbacks f
+      JOIN users u ON u.id = f.user_id
+      ORDER BY f.created_at DESC
+      LIMIT 500
+    `;
+    res.json({ feedbacks });
+  } catch (err) {
+    console.error('List feedbacks error:', err);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
 
 router.post('/', auth, async (req, res) => {
   try {

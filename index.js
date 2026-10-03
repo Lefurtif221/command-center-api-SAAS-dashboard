@@ -16,6 +16,7 @@ const { ADMIN_EMAILS, THANK_YOU_EMAILS } = require('./middleware/plan');
 const sql = require('./db');
 
 const app = express();
+app.set('trust proxy', 1); // derriere le proxy Render : req.protocol = https
 const PORT = process.env.PORT || 3001;
 const sentryEnabled = !!process.env.SENTRY_DSN;
 
@@ -117,6 +118,8 @@ if (sentryEnabled) {
     await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS plan VARCHAR(20) DEFAULT 'free'`;
     // Stats : historique des sessions de focus + date de fin des taches
     await sql`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ`;
+    // Rappel a une heure precise sur une tache du jour
+    await sql`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS remind_time TIME`;
     await sql`
       CREATE TABLE IF NOT EXISTS focus_sessions (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

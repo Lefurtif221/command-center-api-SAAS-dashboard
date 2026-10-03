@@ -46,7 +46,7 @@ function isThankYouEmail(email) {
 function publicUser(user) {
   if (!user) return user;
   let out = user;
-  if (isAdminEmail(user.email)) out = { ...out, plan: 'entreprise' };
+  if (isAdminEmail(user.email)) out = { ...out, plan: 'entreprise', admin: true };
   if (isThankYouEmail(user.email)) out = { ...out, plan: 'entreprise', thank_you: THANK_YOU_NOTE };
   return out;
 }

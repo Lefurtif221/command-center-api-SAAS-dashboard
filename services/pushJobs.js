@@ -96,7 +96,30 @@ async function checkDailyDigest() {
   }
 }
 
-// 3. Rappel calendrier : 15 min avant le début de l'événement
+// 3. Rappel a l'heure choisie sur une tache du jour (remind_time, heure UTC = locale)
+async function checkTaskReminders() {
+  const today = utcToday();
+  const now = new Date();
+  const nowMinutes = now.getUTCHours() * 60 + now.getUTCMinutes();
+  const rows = await sql`
+    SELECT id, title, user_id, remind_time::text AS remind_time
+    FROM tasks
+    WHERE NOT completed
+      AND due_date = ${today}
+      AND remind_time IS NOT NULL
+      AND (EXTRACT(HOUR FROM remind_time) * 60 + EXTRACT(MINUTE FROM remind_time)) <= ${nowMinutes}
+  `;
+  for (const t of rows) {
+    await notify(t.user_id, `remind:${t.id}:${today}`, buildPayload({
+      title: `Rappel : ${t.title}`,
+      body: `Prévu aujourd'hui à ${String(t.remind_time).slice(0, 5)}`,
+      url: '/dashboard',
+      tag: `remind-${t.id}`,
+    }));
+  }
+}
+
+// 4. Rappel calendrier : 15 min avant le début de l'événement
 async function checkCalendarReminders() {
   const today = utcToday();
   const rows = await sql`
@@ -119,7 +142,7 @@ async function checkCalendarReminders() {
   }
 }
 
-// 4. Messages d'équipe : notif directe aux autres membres (appelé par routes/teams.js)
+// 5. Messages d'équipe : notif directe aux autres membres (appelé par routes/teams.js)
 async function notifyTeamNewMessage({ teamId, messageId, senderId, senderName, content }) {
   try {
     if (!VAPID_OK) return;
@@ -143,7 +166,7 @@ async function notifyTeamNewMessage({ teamId, messageId, senderId, senderName, c
   }
 }
 
-// 5. Emails importants : sondage Gmail toutes les EMAIL_POLL_TICKS minutes
+// 6. Emails importants : sondage Gmail toutes les EMAIL_POLL_TICKS minutes
 //    (utilisateurs abonnes au push ET Gmail connecte) — dedup par id Gmail
 async function checkImportantEmails() {
   const users = await sql`
@@ -234,6 +257,7 @@ async function tick() {
   try {
     await checkOverdueTasks();
     await checkDailyDigest();
+    await checkTaskReminders();
     await checkCalendarReminders();
     tickCount++;
     if (tickCount % EMAIL_POLL_TICKS === 0) await checkImportantEmails();

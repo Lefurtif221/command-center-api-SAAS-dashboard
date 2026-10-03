@@ -1,6 +1,8 @@
 const express = require('express');
 const sql = require('../db');
 const { auth } = require('../middleware/auth');
+const { notifyUser } = require('../services/pushJobs');
+const { buildPayload } = require('./push');
 
 const router = express.Router();
 
@@ -8,7 +10,10 @@ const router = express.Router();
 router.get('/', auth, async (req, res) => {
   try {
     const tasks = await sql`
-      SELECT t.id, t.title, t.completed, t.completed_at, t.priority, t.due_date, t.created_at, t.updated_at,
+      SELECT t.id, t.title, t.completed, t.completed_at, t.priority,
+             to_char(t.due_date, 'YYYY-MM-DD') AS due_date,
+             to_char(t.remind_time, 'HH24:MI') AS remind_time,
+             t.created_at, t.updated_at,
              t.team_id, tm.name AS team_name,
              CASE WHEN t.user_id = ${req.userId} THEN true ELSE false END AS is_owner,
              owner.name AS shared_by
@@ -29,8 +34,10 @@ router.get('/', auth, async (req, res) => {
 // Create a task (optionnellement partagee avec une equipe)
 router.post('/', auth, async (req, res) => {
   try {
-    const { title, priority, due_date, team_id } = req.body;
+    const { title, priority, due_date, team_id, remind_time } = req.body;
     if (!title) return res.status(400).json({ error: 'Titre requis' });
+    if (due_date && !/^\d{4}-\d{2}-\d{2}$/.test(due_date)) return res.status(400).json({ error: 'Date invalide (AAAA-MM-JJ)' });
+    if (remind_time && !/^\d{2}:\d{2}$/.test(remind_time)) return res.status(400).json({ error: 'Heure invalide (HH:MM)' });
 
     if (team_id) {
       const member = await sql`
@@ -40,11 +47,24 @@ router.post('/', auth, async (req, res) => {
     }
 
     const result = await sql`
-      INSERT INTO tasks (user_id, title, priority, due_date, team_id)
-      VALUES (${req.userId}, ${title}, ${priority || 'medium'}, ${due_date || null}, ${team_id || null})
-      RETURNING id, title, completed, completed_at, priority, due_date, created_at, team_id
+      INSERT INTO tasks (user_id, title, priority, due_date, team_id, remind_time)
+      VALUES (${req.userId}, ${title}, ${priority || 'medium'}, ${due_date || null}, ${team_id || null}, ${remind_time || null})
+      RETURNING id, title, completed, completed_at, priority,
+                to_char(due_date, 'YYYY-MM-DD') AS due_date,
+                to_char(remind_time, 'HH24:MI') AS remind_time,
+                created_at, team_id
     `;
     res.status(201).json({ task: result[0] });
+
+    // Tache creee pour aujourd'hui : confirmation push immediate (no-op sans abonnement)
+    if (due_date && due_date === new Date().toISOString().slice(0, 10)) {
+      notifyUser(req.userId, `created:${result[0].id}`, buildPayload({
+        title: 'Tâche ajoutée pour aujourd\'hui',
+        body: title,
+        url: '/dashboard',
+        tag: `task-${result[0].id}`,
+      })).catch(() => {});
+    }
   } catch (err) {
     console.error('Create task error:', err);
     res.status(500).json({ error: 'Erreur serveur' });
@@ -54,7 +74,9 @@ router.post('/', auth, async (req, res) => {
 // Update a task (toggle completed, edit) - proprietaire ou membre de l'equipe
 router.put('/:id', auth, async (req, res) => {
   try {
-    const { title, completed, priority, due_date, team_id } = req.body;
+    const { title, completed, priority, due_date, team_id, remind_time } = req.body;
+    if (due_date && !/^\d{4}-\d{2}-\d{2}$/.test(due_date)) return res.status(400).json({ error: 'Date invalide (AAAA-MM-JJ)' });
+    if (remind_time && !/^\d{2}:\d{2}$/.test(remind_time)) return res.status(400).json({ error: 'Heure invalide (HH:MM)' });
     const completedAt = completed === true ? sql`NOW()` : completed === false ? sql`NULL` : sql`completed_at`;
     const result = await sql`
       UPDATE tasks SET
@@ -63,13 +85,17 @@ router.put('/:id', auth, async (req, res) => {
         completed_at = ${completedAt},
         priority = COALESCE(${priority}, priority),
         due_date = ${due_date !== undefined ? due_date : sql`due_date`},
+        remind_time = ${remind_time !== undefined ? (remind_time || null) : sql`remind_time`},
         updated_at = NOW()
       WHERE id = ${req.params.id}
         AND (
           user_id = ${req.userId}
           OR team_id IN (SELECT team_id FROM team_members WHERE user_id = ${req.userId})
         )
-      RETURNING id, title, completed, completed_at, priority, due_date, created_at, updated_at, team_id
+      RETURNING id, title, completed, completed_at, priority,
+                to_char(due_date, 'YYYY-MM-DD') AS due_date,
+                to_char(remind_time, 'HH24:MI') AS remind_time,
+                created_at, updated_at, team_id
     `;
     if (result.length === 0) return res.status(404).json({ error: 'Tâche non trouvée' });
 

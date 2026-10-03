@@ -13,6 +13,14 @@ const router = express.Router();
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
 const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 
+// Base de l'API pour les redirect_uri Google : API_URL si defini, sinon
+// x-forwarded-proto (proxy Render) pour rester en https quoi qu'il arrive.
+function apiBase(req) {
+  if (process.env.API_URL) return process.env.API_URL.replace(/\/$/, '');
+  const proto = req.headers['x-forwarded-proto'] || req.protocol || 'https';
+  return proto + '://' + req.get('host');
+}
+
 // Generate a 6-digit code, store it and email it to the user.
 // Retourne true si le code est parti, false sinon (email indisponible).
 async function sendVerificationCode(user) {
@@ -362,15 +370,15 @@ router.put('/profile', auth, async (req, res) => {
 router.get('/google', (req, res) => {
   const clientId = process.env.GOOGLE_CLIENT_ID;
   if (!clientId) return res.status(500).json({ error: 'Google OAuth non configuré' });
-  const callbackUrl = (process.env.API_URL || req.protocol + '://' + req.get('host')) + '/api/auth/google/callback';
-  const url = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&redirect_uri=${encodeURIComponent(callbackUrl)}&response_type=code&scope=${encodeURIComponent('email profile')}&access_type=offline&prompt=consent`;
+  const callbackUrl = apiBase(req) + '/api/auth/google/callback';
+  const url = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&redirect_uri=${encodeURIComponent(callbackUrl)}&response_type=code&scope=${encodeURIComponent('email profile')}&access_type=offline&prompt=consent select_account`;
   res.redirect(url);
 });
 
 // Google OAuth - callback
 router.get('/google/callback', async (req, res) => {
   const { code, error } = req.query;
-  const callbackUrl = (process.env.API_URL || req.protocol + '://' + req.get('host')) + '/api/auth/google/callback';
+  const callbackUrl = apiBase(req) + '/api/auth/google/callback';
   if (error || !code) {
     return res.redirect(FRONTEND_URL + '/auth?error=' + encodeURIComponent(error || 'Code manquant'));
   }
