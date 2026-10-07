@@ -11,6 +11,7 @@ const router = express.Router();
 
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
 const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
+const { MAIL_FROM } = require('../lib/mailer');
 const INVITE_TTL_DAYS = 7;
 const VALID_ROLES = ['admin', 'member'];
 
@@ -254,7 +255,7 @@ router.post('/:id/invitations', auth, async (req, res) => {
     if (resend) {
       try {
         const { error } = await resend.emails.send({
-          from: 'Personal Place <onboarding@resend.dev>',
+          from: MAIL_FROM,
           to: email,
           subject: `${inviter[0]?.name || 'Quelqu un'} vous invite à rejoindre "${membership.name}"`,
           html: `

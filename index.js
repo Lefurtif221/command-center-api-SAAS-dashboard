@@ -31,7 +31,9 @@ if (sentryEnabled) {
 }
 
 // Auto-migrate: add phone_number_id column if missing + tables equipe
-(async () => {
+// Le serveur attend la fin (schemaReady) avant d ecouter : sinon un signup
+// arrive avant la creation des colonnes et renvoie une 500.
+const schemaReady = (async () => {
   try {
     await sql`ALTER TABLE connected_services ADD COLUMN IF NOT EXISTS phone_number_id VARCHAR(100)`;
     // Multi-comptes Gmail : une ligne par adresse email
@@ -213,6 +215,10 @@ if (sentryEnabled) {
     await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_code TEXT`;
     await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by UUID REFERENCES users(id) ON DELETE SET NULL`;
     await sql`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_referral_code ON users(referral_code)`;
+    // Attribution : d ou vient l inscrit (UTM, ref, referrer)
+    await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS signup_source JSONB`;
+    // Campagne de reactivation : date du dernier envoi (evite les doublons)
+    await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS reactivated_at TIMESTAMPTZ`;
     await sql`
       CREATE TABLE IF NOT EXISTS referrals (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -323,7 +329,9 @@ app.use((err, req, res, next) => {
   res.status(status).json({ error: err.message || 'Erreur serveur' });
 });
 
-app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
-  require('./services/pushJobs').startPushJobs();
+schemaReady.finally(() => {
+  app.listen(PORT, () => {
+    console.log(`Server running on http://localhost:${PORT}`);
+    require('./services/pushJobs').startPushJobs();
+  });
 });

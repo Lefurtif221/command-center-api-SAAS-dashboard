@@ -1,6 +1,7 @@
 const express = require('express');
 const sql = require('../db');
 const { auth } = require('../middleware/auth');
+const { sanitizeSource } = require('../lib/signup-source');
 
 const router = express.Router();
 
@@ -46,7 +47,18 @@ router.get('/', auth, async (req, res) => {
 // Enregistre qui m'a invite (nouveaux comptes seulement, une seule fois)
 router.post('/attach', auth, async (req, res) => {
   try {
-    const ref = String((req.body || {}).ref || '').trim().toUpperCase();
+    const body = req.body || {};
+    const ref = String(body.ref || '').trim().toUpperCase();
+
+    // Source d'inscription (UTM/referrer) : memoire unique, on ne ecrase jamais
+    const source = sanitizeSource(body.source);
+    if (source) {
+      await sql`
+        UPDATE users SET signup_source = COALESCE(signup_source, ${source}::jsonb)
+        WHERE id = ${req.userId}
+      `;
+    }
+
     if (!ref || ref.length > 20) return res.json({ attached: false });
 
     const me = await sql`SELECT id, referral_code, referred_by, created_at FROM users WHERE id = ${req.userId}`;

@@ -7,6 +7,8 @@ const sql = require('../db');
 const { auth, JWT_SECRET } = require('../middleware/auth');
 const { publicUser } = require('../middleware/plan');
 const { isValidEmail } = require('../lib/email-format');
+const { sanitizeSource } = require('../lib/signup-source');
+const { MAIL_FROM } = require('../lib/mailer');
 
 const router = express.Router();
 
@@ -41,7 +43,7 @@ async function sendVerificationCode(user) {
   try {
     // Le SDK Resend ne throw pas : l'erreur (ex: 403 sans domaine verifie) est dans `error`
     const { error } = await resend.emails.send({
-      from: 'Personal Place <onboarding@resend.dev>',
+      from: MAIL_FROM,
       to: user.email,
       subject: 'Votre code de verification',
       html: `
@@ -81,7 +83,7 @@ async function sendWelcomeEmail(user) {
   if (!resend) return;
   try {
     const { error } = await resend.emails.send({
-      from: 'Personal Place <onboarding@resend.dev>',
+      from: MAIL_FROM,
       to: user.email,
       subject: 'Bienvenue sur Personal Place',
       html: `
@@ -121,6 +123,7 @@ async function verifyGoogleToken(idToken) {
 router.post('/signup', async (req, res) => {
   try {
     const { name, email, password } = req.body;
+    const source = sanitizeSource(req.body.source);
     if (!name || !email || !password) {
       return res.status(400).json({ error: 'Tous les champs sont requis' });
     }
@@ -152,8 +155,8 @@ router.post('/signup', async (req, res) => {
     const initials = name.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
 
     const result = await sql`
-      INSERT INTO users (name, email, password_hash, initials, email_verified)
-      VALUES (${name}, ${email}, ${hash}, ${initials}, false)
+      INSERT INTO users (name, email, password_hash, initials, email_verified, signup_source)
+      VALUES (${name}, ${email}, ${hash}, ${initials}, false, ${source})
       RETURNING id, name, email, initials, plan, created_at
     `;
 
@@ -473,7 +476,7 @@ router.post('/forgot-password', async (req, res) => {
     if (resend) {
       const resetUrl = `${FRONTEND_URL}/auth/reset-password?token=${token}`;
       const { error } = await resend.emails.send({
-        from: 'Personal Place <onboarding@resend.dev>',
+        from: MAIL_FROM,
         to: email,
         subject: 'Réinitialisation de votre mot de passe',
         html: `

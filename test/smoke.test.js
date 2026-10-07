@@ -50,7 +50,7 @@ async function signupUser(name, email, password = 'password123') {
   return { data: verified.data };
 }
 
-async function waitForHealth(timeoutMs = 30000) {
+async function waitForHealth(timeoutMs = 60000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     try {
@@ -815,6 +815,54 @@ test('parrainage : code, attach une fois, refus des cas invalides', async () => 
   // Son propre code ne compte pas
   const self = await api('/api/me/referral/attach', { method: 'POST', token: parrainToken, body: { ref: mine.data.code } });
   assert.strictEqual(self.data.attached, false);
+});
+
+test('attribution : signup_source stockee a l inscription, clés inutiles ignorees, attach ne ecrase pas', async () => {
+  const email = `smoke-src-${uniq()}@test.local`;
+  const created = await api('/api/auth/signup', {
+    method: 'POST',
+    body: {
+      name: 'Source Test',
+      email,
+      password: 'password123',
+      source: { utm_source: 'instagram', utm_medium: 'social', referrer: 'https://instagram.com/x', junk: 'x'.repeat(5000) },
+    },
+  });
+  assert.strictEqual(created.status, 201);
+  assert.ok(created.data.needsVerification);
+
+  const rows = await sql`SELECT id, signup_source FROM users WHERE email = ${email}`;
+  assert.strictEqual(rows.length, 1, 'compte cree');
+  ids.push(rows[0].id);
+  const src = rows[0].signup_source;
+  assert.ok(src, 'signup_source renseignee');
+  assert.strictEqual(src.utm_source, 'instagram');
+  assert.strictEqual(src.junk, undefined, 'cle non autorisee ignoree');
+
+  const codes = await sql`
+    SELECT c.code FROM email_verification_codes c
+    JOIN users u ON u.id = c.user_id
+    WHERE u.email = ${email}
+    ORDER BY c.created_at DESC LIMIT 1
+  `;
+  assert.strictEqual(codes.length, 1);
+  const verified = await api('/api/auth/verify-email', {
+    method: 'POST',
+    body: { email, code: codes[0].code },
+  });
+  assert.strictEqual(verified.status, 200);
+  const token = verified.data.token;
+
+  // Attach sans ref (comme un arrive sans lien) : la source est completee sans ecraser
+  const attach = await api('/api/me/referral/attach', {
+    method: 'POST',
+    token,
+    body: { source: { utm_source: 'tiktok' } },
+  });
+  assert.strictEqual(attach.status, 200);
+  assert.strictEqual(attach.data.attached, false);
+  const after = await sql`SELECT signup_source FROM users WHERE id = ${rows[0].id}`;
+  assert.strictEqual(after[0].signup_source.utm_source, 'instagram', 'COALESCE ne ecrase jamais la source initiale');
 });
 
 test('push: /api/push/test refuse sans token, repond pour un utilisateur sans abonnement', async () => {
